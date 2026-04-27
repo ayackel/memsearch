@@ -97,6 +97,40 @@ When modifying hooks/skills, keep in mind:
 - The `memory-recall` skill uses `context: fork` — the subagent has its own context window and does not see main conversation history
 - `transcript.py` lives in the plugin directory (not in core library) since it is entirely Claude Code JSONL-specific
 
+### Copilot CLI Plugin (`plugins/copilot-cli/`)
+
+Port of the Claude Code plugin for GitHub Copilot CLI. Same architecture — 4 shell hooks + 1 skill + 1 background watcher — adapted for Copilot CLI's hook system and transcript format.
+
+```
+plugins/copilot-cli/
+├── hooks/
+│   ├── hooks.json              # Hook registration (Copilot CLI v1 format)
+│   ├── common.sh               # Shared setup: PATH, memsearch detection, collection, JSON helpers
+│   ├── session-start.sh        # sessionStart: bootstrap, start watch, inject memories via semantic search
+│   ├── agent-stop.sh           # agentStop: parse last turn → copilot -p summarize → append to daily .md
+│   ├── session-end.sh          # sessionEnd: stop watch, cleanup
+│   ├── user-prompt-submit.sh   # userPromptSubmit: lightweight "[memsearch] Memory available" hint
+│   └── parse-transcript.sh     # Copilot JSONL transcript parser (inline Python3)
+├── scripts/
+│   └── derive-collection.sh    # Symlink → ../../claude-code/scripts/derive-collection.sh
+├── prompts/
+│   └── summarize.txt           # Synced from plugins/_shared/prompts/summarize.txt
+├── skills/
+│   └── memory-recall/
+│       └── SKILL.md            # Memory retrieval skill (Copilot-adapted)
+├── install.sh                  # Install script
+└── README.md                   # Plugin documentation
+```
+
+**Key differences from Claude Code plugin:**
+- Hook names are camelCase (`sessionStart`, `agentStop`) vs PascalCase (`SessionStart`, `Stop`)
+- JSON output is flat (`{ "systemMessage", "additionalContext" }`) not nested under `hookSpecificOutput`
+- `agentStop` replaces `Stop` — fires per-turn with `stopReason: "end_turn"`
+- Transcript parser handles Copilot CLI's `events.jsonl` format (`user.message`, `assistant.message`, `tool.execution_complete`)
+- Per-session checkpoint file at `~/.copilot/session-state/<id>/.memsearch_checkpoint` prevents re-summarization
+- `sessionStart` uses semantic search on `initialPrompt` for context injection (vs raw recency in Claude Code)
+- Summarization calls `copilot -p` instead of `claude -p`
+
 ## Key Design Decisions
 
 - **Markdown is the source of truth.** Milvus is a derived index, rebuildable anytime from `.md` files.
@@ -109,7 +143,7 @@ When modifying hooks/skills, keep in mind:
 
 ## Versioning & Release
 
-**Five independent version numbers** — bump only the ones that changed:
+**Six independent version numbers** — bump only the ones that changed:
 
 | Component | Version file | Publish channel |
 |-----------|-------------|-----------------|
@@ -117,6 +151,7 @@ When modifying hooks/skills, keep in mind:
 | **Claude Code plugin** | `plugins/claude-code/.claude-plugin/plugin.json` | Marketplace (`.claude-plugin/marketplace.json`) |
 | **OpenClaw plugin** | `plugins/openclaw/package.json` | ClawHub (`clawhub package publish`) |
 | **OpenCode plugin** | `plugins/opencode/package.json` | npm (`@zilliz/memsearch-opencode`) |
+| **Copilot CLI plugin** | *(none)* | `install.sh` (no version management) |
 | **Codex CLI plugin** | *(none)* | `install.sh` (no version management) |
 
 See `CLAUDE.local.md` for detailed release procedures, current versions, and operational details.
