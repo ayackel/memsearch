@@ -129,7 +129,8 @@ plugins/copilot-cli/
 - Transcript parser handles Copilot CLI's `events.jsonl` format (`user.message`, `assistant.message`, `tool.execution_complete`)
 - Per-session checkpoint file at `~/.copilot/session-state/<id>/.memsearch_checkpoint` prevents re-summarization
 - `sessionStart` uses semantic search on `initialPrompt` for context injection (vs raw recency in Claude Code)
-- Summarization calls `copilot -p` instead of `claude -p`
+- Summarization calls `copilot -p` instead of `claude -p`; flags (`--model`, `--allow-all-tools`) must precede `-p`
+- Installs to `~/.copilot/installed-plugins/local/memsearch/` (not `extensions/`) and registers in `config.json`
 
 ## Key Design Decisions
 

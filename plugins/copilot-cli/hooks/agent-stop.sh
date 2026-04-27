@@ -85,8 +85,8 @@ else
 fi
 
 # Summarize with copilot -p (non-interactive mode)
-# copilot -p takes the full prompt as a text argument (no --system-prompt flag),
-# so we prepend the system prompt as instructions before the transcript.
+# copilot -p takes the full prompt as its argument. Flags (--model, --allow-all-tools)
+# MUST come before -p — placing them after causes "too many arguments" errors.
 # MEMSEARCH_NO_WATCH=1 prevents child copilot from triggering hooks.
 SUMMARY=""
 if command -v copilot &>/dev/null; then
@@ -95,12 +95,10 @@ if command -v copilot &>/dev/null; then
 ---
 Transcript:
 ${PARSED}"
-  # TODO: Verify copilot -p accepts --model claude-haiku-4.5 and --allow-all-tools.
-  # If copilot -p doesn't support --model or the model name differs, adjust accordingly.
-  SUMMARY=$(MEMSEARCH_NO_WATCH=1 copilot -p \
+  SUMMARY=$(MEMSEARCH_NO_WATCH=1 copilot \
     --model claude-haiku-4.5 \
     --allow-all-tools \
-    "$FULL_PROMPT" \
+    -p "$FULL_PROMPT" \
     2>/dev/null || true)
 fi
 

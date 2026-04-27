@@ -4,28 +4,28 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/extensions/memsearch}/hooks/session-start.sh\"",
+        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/session-start.sh\"",
         "timeoutSec": 30
       }
     ],
     "agentStop": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/extensions/memsearch}/hooks/agent-stop.sh\"",
+        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/agent-stop.sh\"",
         "timeoutSec": 15
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/extensions/memsearch}/hooks/session-end.sh\"",
+        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/session-end.sh\"",
         "timeoutSec": 10
       }
     ],
     "userPromptSubmit": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/extensions/memsearch}/hooks/user-prompt-submit.sh\"",
+        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/user-prompt-submit.sh\"",
         "timeoutSec": 5
       }
     ]

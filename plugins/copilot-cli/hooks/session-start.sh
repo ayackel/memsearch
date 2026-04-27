@@ -139,7 +139,7 @@ context=""
 
 # --- Semantic search: use initial prompt as query for relevant memory ---
 if [ -n "$INITIAL_PROMPT" ] && [ -n "$MEMSEARCH_CMD" ]; then
-  _search_args=(search "$INITIAL_PROMPT" --limit 5 --format plain)
+  _search_args=(search "$INITIAL_PROMPT" --top-k 5)
   [ -n "$COLLECTION_NAME" ] && _search_args+=(--collection "$COLLECTION_NAME")
   search_results=$($MEMSEARCH_CMD "${_search_args[@]}" 2>/dev/null || true)
   if [ -n "$search_results" ] && [ "$search_results" != "No results found." ]; then
