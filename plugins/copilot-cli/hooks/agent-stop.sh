@@ -120,6 +120,7 @@ fi
 } >> "$MEMORY_FILE"
 
 # Update checkpoint
+mkdir -p "$(dirname "$CHECKPOINT_FILE")"
 echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
 
 # Re-index immediately

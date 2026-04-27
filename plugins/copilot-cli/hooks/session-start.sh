@@ -152,13 +152,13 @@ if [ -z "$context" ]; then
   recent_files=$(ls -1 "$MEMORY_DIR"/*.md 2>/dev/null | sort -r | head -2)
   if [ -n "$recent_files" ]; then
     context="# Recent Memory\n\n"
-    for f in $recent_files; do
+    while IFS= read -r f; do
       basename_f=$(basename "$f")
       content=$(grep -E '^(#{2,4} |- )' "$f" 2>/dev/null | head -40 || true)
       if [ -n "$content" ]; then
         context+="## $basename_f\n$content\n\n"
       fi
-    done
+    done <<< "$recent_files"
   fi
 fi
 

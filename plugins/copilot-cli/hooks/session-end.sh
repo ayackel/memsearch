@@ -7,4 +7,5 @@ source "$SCRIPT_DIR/common.sh"
 stop_watch
 kill_orphaned_index
 
+echo '{}'
 exit 0
