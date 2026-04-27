@@ -1,0 +1,1 @@
+../../claude-code/scripts/derive-collection.sh
