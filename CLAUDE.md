@@ -118,7 +118,8 @@ plugins/copilot-cli/
 ├── skills/
 │   └── memory-recall/
 │       └── SKILL.md            # Memory retrieval skill (Copilot-adapted)
-├── install.sh                  # Install script
+├── plugin.json                 # Plugin manifest (required for skill discovery)
+├── install.sh                  # Install script (uses `copilot plugin install`)
 └── README.md                   # Plugin documentation
 ```
 
@@ -130,7 +131,7 @@ plugins/copilot-cli/
 - Per-session checkpoint file at `~/.copilot/session-state/<id>/.memsearch_checkpoint` prevents re-summarization
 - `sessionStart` uses semantic search on `initialPrompt` for context injection (vs raw recency in Claude Code)
 - Summarization calls `copilot -p` instead of `claude -p`; flags (`--model`, `--allow-all-tools`) must precede `-p`
-- Installs to `~/.copilot/installed-plugins/local/memsearch/` (not `extensions/`) and registers in `config.json`
+- Installs via `copilot plugin install` to `~/.copilot/installed-plugins/_direct/` with proper skill registration
 
 ## Key Design Decisions
 
@@ -152,7 +153,7 @@ plugins/copilot-cli/
 | **Claude Code plugin** | `plugins/claude-code/.claude-plugin/plugin.json` | Marketplace (`.claude-plugin/marketplace.json`) |
 | **OpenClaw plugin** | `plugins/openclaw/package.json` | ClawHub (`clawhub package publish`) |
 | **OpenCode plugin** | `plugins/opencode/package.json` | npm (`@zilliz/memsearch-opencode`) |
-| **Copilot CLI plugin** | *(none)* | `install.sh` (no version management) |
+| **Copilot CLI plugin** | `plugins/copilot-cli/plugin.json` | `copilot plugin install` (local) |
 | **Codex CLI plugin** | *(none)* | `install.sh` (no version management) |
 
 See `CLAUDE.local.md` for detailed release procedures, current versions, and operational details.

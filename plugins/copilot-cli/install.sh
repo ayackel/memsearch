@@ -4,8 +4,6 @@
 
 set -euo pipefail
 
-PLUGIN_NAME="memsearch"
-INSTALL_DIR="$HOME/.copilot/installed-plugins/local/$PLUGIN_NAME"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Installing memsearch plugin for Copilot CLI..."
@@ -21,56 +19,30 @@ if ! command -v memsearch &>/dev/null; then
   uv tool install 'memsearch[onnx]'
 fi
 
-# Create plugin directory
-mkdir -p "$INSTALL_DIR"
+# Check for copilot CLI
+if ! command -v copilot &>/dev/null; then
+  echo "Error: Copilot CLI (copilot) not found. Install it first:"
+  echo "  https://docs.github.com/en/copilot/how-tos/copilot-cli"
+  exit 1
+fi
 
-# Copy plugin files (resolve symlinks via cp -L for portability)
-cp -L "$SCRIPT_DIR/plugin.json" "$INSTALL_DIR/"
-cp -rL "$SCRIPT_DIR/hooks" "$INSTALL_DIR/"
-cp -rL "$SCRIPT_DIR/scripts" "$INSTALL_DIR/"
-cp -rL "$SCRIPT_DIR/prompts" "$INSTALL_DIR/"
-cp -rL "$SCRIPT_DIR/skills" "$INSTALL_DIR/"
+# Uninstall previous version if present
+if copilot plugin list 2>/dev/null | grep -q memsearch; then
+  echo "Removing previous installation..."
+  copilot plugin uninstall memsearch 2>/dev/null || true
+fi
 
-# Make hooks executable
-chmod +x "$INSTALL_DIR"/hooks/*.sh
-chmod +x "$INSTALL_DIR"/scripts/*.sh 2>/dev/null || true
-
-# Register in Copilot CLI config if not already present
-CONFIG_FILE="$HOME/.copilot/config.json"
-if [ -f "$CONFIG_FILE" ]; then
-  if ! python3 -c "
-import json, re, sys, os
-with open('$CONFIG_FILE') as f:
-    raw = f.read()
-cleaned = re.sub(r'^\s*//.*$', '', raw, flags=re.MULTILINE)
-cfg = json.loads(cleaned)
-for p in cfg.get('installedPlugins', []):
-    if p.get('name') == 'memsearch':
-        sys.exit(0)  # already registered
-home = os.path.expanduser('~')
-version = '$(memsearch --version 2>/dev/null | sed "s/.*version //" || echo "0.0.0")'
-cfg.setdefault('installedPlugins', []).append({
-    'name': 'memsearch', 'marketplace': 'local', 'version': version,
-    'installed_at': '$(date -u +%Y-%m-%dT%H:%M:%S.000Z)', 'enabled': True,
-    'cache_path': f'{home}/.copilot/installed-plugins/local/memsearch'
-})
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(cfg, f, indent=2)
-print('Registered in Copilot CLI config', file=sys.stderr)
-" 2>&1; then
-    echo "Warning: Could not register in config.json (plugin will still work via hooks discovery)"
+# Clean up legacy install locations
+for legacy_dir in "$HOME/.copilot/extensions/memsearch" "$HOME/.copilot/installed-plugins/local/memsearch"; do
+  if [ -d "$legacy_dir" ]; then
+    rm -rf "$legacy_dir"
+    echo "Removed legacy install at $legacy_dir"
   fi
-fi
+done
 
-# Clean up legacy install location
-LEGACY_DIR="$HOME/.copilot/extensions/$PLUGIN_NAME"
-if [ -d "$LEGACY_DIR" ]; then
-  rm -rf "$LEGACY_DIR"
-  echo "Removed legacy install at $LEGACY_DIR"
-fi
+# Install via the official Copilot CLI plugin command
+copilot plugin install "$SCRIPT_DIR"
 
 echo ""
-echo "✓ Installed to $INSTALL_DIR"
-echo ""
-echo "Verify: memsearch --version"
+echo "Verify: copilot plugin list | grep memsearch"
 echo "The plugin will activate on your next Copilot CLI session."
