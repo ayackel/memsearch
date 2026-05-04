@@ -1,8 +1,6 @@
 ---
 name: memory-recall
 description: "Search and recall relevant memories from past sessions via memsearch. Use when the user's question could benefit from historical context, past decisions, debugging notes, previous conversations, or project knowledge -- especially questions like 'what did I decide about X', 'why did we do Y', or 'have I seen this before'. Also use when you see `[memsearch] Memory available` hints. Typical flow: search for 3-5 chunks, expand the most relevant. Skip when the question is purely about current code state (use grep/view), ephemeral (today's task only), or the user has explicitly asked to ignore memory."
-context: fork
-allowed-tools: Bash
 ---
 
 You are a memory retrieval agent for memsearch. Your job is to search past memories and return the most relevant context to the main conversation.

@@ -25,6 +25,7 @@ fi
 mkdir -p "$INSTALL_DIR"
 
 # Copy plugin files (resolve symlinks via cp -L for portability)
+cp -L "$SCRIPT_DIR/plugin.json" "$INSTALL_DIR/"
 cp -rL "$SCRIPT_DIR/hooks" "$INSTALL_DIR/"
 cp -rL "$SCRIPT_DIR/scripts" "$INSTALL_DIR/"
 cp -rL "$SCRIPT_DIR/prompts" "$INSTALL_DIR/"
