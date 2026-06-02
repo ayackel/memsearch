@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # Install the memsearch plugin for Copilot CLI.
-# Usage: bash install.sh
+#
+# Usage:
+#   bash install.sh          # Install from GitHub (recommended)
+#   bash install.sh --local  # Install from this local directory
+#
+# Update:
+#   /plugin update memsearch   (inside Copilot CLI)
+#   copilot plugin update memsearch
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GITHUB_SOURCE="ayackel/memsearch:plugins/copilot-cli"
+
+# Parse args
+LOCAL_INSTALL=false
+if [[ "${1:-}" == "--local" ]]; then
+  LOCAL_INSTALL=true
+fi
 
 echo "Installing memsearch plugin for Copilot CLI..."
 
@@ -41,8 +55,16 @@ for legacy_dir in "$HOME/.copilot/extensions/memsearch" "$HOME/.copilot/installe
 done
 
 # Install via the official Copilot CLI plugin command
-copilot plugin install "$SCRIPT_DIR"
+if [ "$LOCAL_INSTALL" = true ]; then
+  echo "Installing from local directory: $SCRIPT_DIR"
+  copilot plugin install "$SCRIPT_DIR"
+else
+  echo "Installing from GitHub: $GITHUB_SOURCE"
+  copilot plugin install "$GITHUB_SOURCE"
+fi
 
 echo ""
-echo "Verify: copilot plugin list | grep memsearch"
+echo "✓ Installed: $(copilot plugin list 2>/dev/null | grep memsearch)"
+echo ""
+echo "Update later with: /plugin update memsearch"
 echo "The plugin will activate on your next Copilot CLI session."
