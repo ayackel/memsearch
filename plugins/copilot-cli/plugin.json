@@ -1,7 +1,7 @@
 {
   "name": "memsearch",
   "description": "Semantic memory search for Copilot CLI — remembers what you worked on across sessions",
-  "version": "0.4.0",
+  "version": "0.4.6",
   "skills": "skills/",
   "hooks": "hooks/hooks.json"
 }
