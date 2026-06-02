@@ -52,8 +52,8 @@ Unlike Claude Code and Codex (which use hook-based capture), OpenCode uses a **b
 OpenCode stores all conversations in a SQLite database (`~/.local/share/opencode/opencode.db`). The daemon polls this database directly, which means:
 
 - **No hook limitations** -- capture works regardless of which hooks OpenCode exposes
-- **Reliable detection** -- new turns are detected by tracking `last_msg_time`, not by fragile event timing
-- **Crash resilience** -- state is persisted to `.memsearch/.last_msg_time`, so daemon restarts don't re-capture old turns
+- **Reliable detection** -- new turns are detected by tracking a per-session completed-turn cursor, not by fragile event timing
+- **Crash resilience** -- derived state is persisted to `.memsearch/opencode-turns.db`, so daemon restarts can replay safely without duplicating captured markdown
 
 ### Daemon Flow
 
@@ -67,13 +67,13 @@ sequenceDiagram
 
     loop Every 10 seconds
         Daemon->>DB: Query sessions for project_dir
-        DB->>Daemon: Messages newer than last_msg_time
+        DB->>Daemon: Messages newer than the last completed turn cursor
         alt New turns found
-            Daemon->>Daemon: Group into user+assistant pairs
+            Daemon->>Daemon: Group into turns via user message + assistant descendants
             Daemon->>LLM: Summarize turn (isolated config)
-            LLM->>Daemon: 2-6 bullet points
+            LLM->>Daemon: 2-10 bullet points
             Daemon->>File: Append with session anchor
-            Daemon->>Daemon: Update last_msg_time (persist to disk)
+            Daemon->>Daemon: Update turn cursor (persist to sidecar DB)
             Daemon->>Index: memsearch index (background)
         end
     end
@@ -81,13 +81,18 @@ sequenceDiagram
 
 Step by step:
 
-1. **Poll SQLite** -- queries the `session` and `message` tables for the current project directory, looking for messages newer than `last_msg_time`
-2. **Group into turns** -- pairs consecutive `user` + `assistant` messages into turns
-3. **Extract text** -- reads message `parts` (text content, tool calls with names/paths) into a readable format
+1. **Poll SQLite** -- queries the `session` and `message` tables for the current project directory, looking for messages newer than the last completed turn cursor
+2. **Group into turns** -- groups each `user` message with its assistant/tool descendants until the next `user` message
+3. **Extract text** -- reads message text into a readable format and skips raw tool parts
 4. **Summarize** -- calls `opencode run` with the turn text and a third-person summarization prompt
-5. **Write to memory** -- appends the summary to `.memsearch/memory/YYYY-MM-DD.md` with `<!-- session:ID db:PATH -->` anchors
-6. **Persist state** -- writes `last_msg_time` to `.memsearch/.last_msg_time` so restarts don't re-capture
+5. **Write to memory** -- appends the summary to `.memsearch/memory/YYYY-MM-DD.md` with `<!-- session:ID turn:ID db:PATH -->` anchors
+6. **Persist state** -- writes the completed-turn cursor and derived turn ordering to `.memsearch/opencode-turns.db`
 7. **Re-index** -- triggers `memsearch index` in the background
+
+OpenCode SQLite remains the source of truth for original transcript reads. The
+sidecar database is derived capture state only. If markdown append succeeds and
+the sidecar write fails later, the next daemon replay uses the existing
+session+turn anchor to avoid duplicate memory entries and repair the sidecar.
 
 ### LLM Summarization with Isolation
 
@@ -97,8 +102,8 @@ The daemon summarizes turns via `opencode run` -- but it must avoid triggering t
 result = subprocess.run(
     ["opencode", "run", "-m", small_model, prompt],
     env={
-        "XDG_CONFIG_HOME": "/tmp/opencode-memsearch-summarize",
-        "XDG_DATA_HOME": "/tmp/opencode-memsearch-summarize/data",
+        "XDG_CONFIG_HOME": "~/.codex/tmp/opencode-memsearch-summarize",
+        "XDG_DATA_HOME": "~/.codex/tmp/opencode-memsearch-summarize/data",
         "MEMSEARCH_NO_WATCH": "1",
     },
 )
@@ -106,7 +111,7 @@ result = subprocess.run(
 
 The isolated `XDG_CONFIG_HOME` contains a copy of `opencode.json` (for provider/model config) but **no `plugins/` directory** -- so the memsearch plugin doesn't load in the summarization subprocess. The `MEMSEARCH_NO_WATCH` env var provides an additional guard.
 
-The daemon also reads `small_model` from `opencode.json` config, using a lighter model for summarization when available.
+The daemon also reads `small_model` from `opencode.json` config, using a lighter model for summarization when available. Set `plugins.opencode.summarize.model` to override only this native capture model. To use a memsearch-managed API provider instead, define `[llm.providers.<name>]` and set `plugins.opencode.summarize.provider` to that name. Empty or `native` preserves the current `small_model` / plugin default behavior, and this setting does not fall back to `llm.model`.
 
 ### Daemon Self-Management
 
@@ -157,14 +162,14 @@ your-project/.memsearch/memory/
 ## Session 14:30
 
 ### 14:30
-<!-- session:ses_abc123 db:~/.local/share/opencode/opencode.db -->
+<!-- session:ses_abc123 turn:msg_123abc db:~/.local/share/opencode/opencode.db -->
 - User asked about authentication flow in the Express API
 - OpenCode explained the OAuth2 implementation in auth.ts
 - OpenCode modified token refresh logic in refresh.ts to handle expired tokens
 - Added error handling for revoked refresh tokens
 
 ### 15:15
-<!-- session:ses_abc123 db:~/.local/share/opencode/opencode.db -->
+<!-- session:ses_abc123 turn:msg_456def db:~/.local/share/opencode/opencode.db -->
 - User reported 500 error on /api/users endpoint
 - OpenCode traced the issue to a missing null check in userController.ts
 - OpenCode added optional chaining and a 404 response for missing users
@@ -173,14 +178,14 @@ your-project/.memsearch/memory/
 ## Session 17:00
 
 ### 17:00
-<!-- session:ses_def456 db:~/.local/share/opencode/opencode.db -->
+<!-- session:ses_def456 turn:msg_789ghi db:~/.local/share/opencode/opencode.db -->
 - User asked to refactor the middleware chain for better error handling
 - OpenCode created a centralized error handler in middleware/errorHandler.ts
 - Removed try/catch blocks from individual route handlers
 - Added structured error logging with request ID correlation
 ```
 
-The `<!-- session:... db:~/.local/share/opencode/opencode.db -->` anchors are used by the `memory_transcript` tool to query the original conversation from OpenCode's SQLite database.
+The `<!-- session:... turn:... db:~/.local/share/opencode/opencode.db -->` anchors are used by the `memory_transcript` tool to query the original conversation from OpenCode's SQLite database. The sidecar database is not required for transcript reads.
 
 ---
 
@@ -192,7 +197,7 @@ The `<!-- session:... db:~/.local/share/opencode/opencode.db -->` anchors are us
 | **Summarizer** | `opencode run` (isolated) | `claude -p --model haiku` | `openclaw agent --local` | `codex exec` (isolated) |
 | **L3 source** | OpenCode SQLite DB | Claude Code JSONL | OpenClaw JSONL | Codex rollout JSONL |
 | **Recall trigger** | Tool-based (LLM decides) | Skill in forked subagent (`context: fork`) | Tool-based (LLM decides) | Skill-based (main context) |
-| **Install** | npm + opencode.json | Plugin marketplace | `openclaw plugins install` | `install.sh` + hooks.json |
+| **Install** | npm + opencode.json | Plugin marketplace | `openclaw plugins install --force` + hook permissions | `install.sh` + hooks.json |
 | **Recursion prevention** | XDG_CONFIG_HOME isolation | `CLAUDECODE=` env var | `MEMSEARCH_NO_WATCH` flag | Isolated CODEX_HOME |
 
 ---
@@ -216,7 +221,7 @@ plugins/opencode/
 | File | Purpose |
 |------|---------|
 | `index.ts` | Main plugin. Registers 3 tools, system.transform hook, daemon lifecycle management |
-| `capture-daemon.py` | Background Python daemon. Polls OpenCode's SQLite, summarizes turns via `opencode run`, writes to daily `.md`, triggers re-indexing |
+| `capture-daemon.py` | Background Python daemon. Polls OpenCode's SQLite, renders turns from User/Assistant text while skipping tool output, summarizes via `opencode run`, writes to daily `.md`, triggers re-indexing |
 | `parse-transcript.py` | SQLite session reader for L3 drill-down. Reads original messages from OpenCode's database by session ID |
 | `derive-collection.sh` | Generates deterministic per-project Milvus collection names from project paths |
 | `install.sh` | Installation script: symlinks plugin, copies skill to `~/.agents/skills/`, installs dependencies |

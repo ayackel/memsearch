@@ -19,11 +19,12 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
+const PLUGIN_DIR = dirname(realpathSync(fileURLToPath(import.meta.url)));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -92,7 +93,7 @@ function getRecentMemories(
     try {
       const content = readFileSync(join(memDir, file), "utf-8");
       const lines = content.split("\n")
-        .filter((l) => /^#{2,4}\s/.test(l) || l.startsWith("- ") || l.startsWith("[Human]") || l.startsWith("[Assistant]"))
+        .filter((l) => /^#{2,4}\s/.test(l) || l.startsWith("- ") || l.startsWith("[User]") || l.startsWith("[Assistant]"))
         .slice(0, maxLinesPerFile);
       if (lines.length > 0) {
         summary.push(`[${file}]`, ...lines);
@@ -167,6 +168,19 @@ function stopCaptureDaemon(projectDir: string): void {
   }
 }
 
+function wakeMaintenance(projectDir: string, memsearchDir: string): void {
+  const runner = join(PLUGIN_DIR, "scripts", "maintenance-runner.py");
+  exec(
+    `python3 '${shellEscape(runner)}' --platform opencode ` +
+      `--project-dir '${shellEscape(projectDir)}' --memsearch-dir '${shellEscape(memsearchDir)}' &`,
+    {
+      timeout: 5000,
+      env: { ...process.env, MEMSEARCH_NO_WATCH: "1" },
+    },
+    () => { /* ignore */ }
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Plugin entry
 // ---------------------------------------------------------------------------
@@ -212,6 +226,7 @@ const MemsearchPlugin: Plugin = async ({ project, directory, worktree }) => {
   // Start capture daemon for auto-capture
   if (autoCapture) {
     startCaptureDaemon(projectDir, collectionName, memsearchCmd);
+    wakeMaintenance(projectDir, memsearchDir);
   }
 
   return {
@@ -285,11 +300,14 @@ const MemsearchPlugin: Plugin = async ({ project, directory, worktree }) => {
         description:
           "Retrieve the original conversation from a past OpenCode session. " +
           "Use after memory_get when the expanded result contains a session anchor " +
-          "(<!-- session:ID db:PATH -->). Returns the formatted " +
-          "dialogue with [Human] and [Assistant] labels.",
+          "(<!-- session:ID turn:ID db:PATH -->). Returns the formatted " +
+          "dialogue with [User] and [Assistant] labels. When turn_id is present, " +
+          "the tool returns the target turn plus surrounding context.",
         args: {
           session_id: tool.schema.string().describe("The session ID from the anchor comment"),
-          limit: tool.schema.number().optional().describe("Max number of messages to return (default: 20)"),
+          turn_id: tool.schema.string().optional().describe("Optional turn ID from the anchor comment"),
+          context: tool.schema.number().optional().describe("Turns before/after the target turn (default: 3)"),
+          limit: tool.schema.number().optional().describe("Max number of turns to return when no turn_id is provided (default: 20)"),
         },
         async execute(args, context) {
           const dir = context?.directory || projectDir;
@@ -297,11 +315,25 @@ const MemsearchPlugin: Plugin = async ({ project, directory, worktree }) => {
           if (autoCapture) startCaptureDaemon(dir, col, memsearchCmd);
           try {
             const scriptPath = join(PLUGIN_DIR, "scripts", "parse-transcript.py");
-            const result = spawnSync(
-              "python3",
-              [scriptPath, args.session_id, ...(args.limit ? ["--limit", String(args.limit)] : [])],
-              { encoding: "utf-8", timeout: 15000 }
-            );
+            const scriptArgs = [
+              scriptPath,
+              args.session_id,
+              "--project-dir",
+              dir,
+            ];
+            if (args.turn_id) {
+              scriptArgs.push("--turn", args.turn_id);
+            }
+            if (typeof args.context === "number") {
+              scriptArgs.push("--context", String(args.context));
+            }
+            if (typeof args.limit === "number") {
+              scriptArgs.push("--limit", String(args.limit));
+            }
+            const result = spawnSync("python3", scriptArgs, {
+              encoding: "utf-8",
+              timeout: 15000,
+            });
             return result.stdout?.trim() || result.stderr || "No transcript content found.";
           } catch (e: any) {
             return `Transcript parse failed: ${e.message}`;

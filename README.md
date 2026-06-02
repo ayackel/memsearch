@@ -40,7 +40,8 @@
 
 Pick your platform, install the plugin, and you're done. Each plugin captures conversations automatically and provides semantic recall with zero configuration.
 
-### For Claude Code Users
+<details open>
+<summary><h3>For Claude Code Users</h3></summary>
 
 ```bash
 # Install
@@ -70,10 +71,14 @@ We discussed Redis caching before, what was the TTL we chose?
 
 > 📖 [Claude Code Plugin docs](https://zilliztech.github.io/memsearch/platforms/claude-code/) · [Troubleshooting](https://zilliztech.github.io/memsearch/platforms/claude-code/troubleshooting/)
 
-### For Codex CLI Users
+</details>
+
+<details open>
+<summary><h3>For Codex CLI Users</h3></summary>
 
 ```bash
 # Install
+git clone --depth 1 https://github.com/zilliztech/memsearch.git
 bash memsearch/plugins/codex/scripts/install.sh
 codex --yolo  # needed for ONNX model network access
 ```
@@ -94,11 +99,16 @@ $memory-recall what did we discuss about deployment?
 
 > 📖 [Codex CLI Plugin docs](https://zilliztech.github.io/memsearch/platforms/codex/)
 
-### For OpenClaw Users
+</details>
+
+<details>
+<summary><h3>For OpenClaw Users</h3></summary>
 
 ```bash
 # Install from ClawHub
-openclaw plugins install clawhub:memsearch
+openclaw plugins install --force clawhub:memsearch
+openclaw config set plugins.entries.memsearch.hooks.allowConversationAccess true
+openclaw config set plugins.entries.memsearch.hooks.allowPromptInjection true
 openclaw gateway restart
 ```
 
@@ -125,7 +135,10 @@ We discussed batch size limits before, what did we decide?
 
 > 📖 [OpenClaw Plugin docs](https://zilliztech.github.io/memsearch/platforms/openclaw/) · [Browse on ClawHub](https://clawhub.ai/plugins/memsearch)
 
-### For OpenCode Users
+</details>
+
+<details>
+<summary><h3>For OpenCode Users</h3></summary>
 
 ```json
 // In ~/.config/opencode/opencode.json
@@ -151,6 +164,8 @@ We discussed the authentication flow before, what was the approach?
 ```
 
 > 📖 [OpenCode Plugin docs](https://zilliztech.github.io/memsearch/platforms/opencode/)
+
+</details>
 
 ### ⚙️ Configuration (all platforms)
 
@@ -207,6 +222,61 @@ memsearch config set milvus.uri http://localhost:19530
 </details>
 
 > 📖 Full configuration guide: [Configuration](https://zilliztech.github.io/memsearch/home/configuration/) · [Platform comparison](https://zilliztech.github.io/memsearch/platforms/)
+
+#### Capture Summarization Routing
+
+Each plugin keeps its native capture summarizer unless you override it explicitly:
+
+```bash
+memsearch config set plugins.codex.summarize.model gpt-5.1-codex-mini
+memsearch config set plugins.opencode.summarize.model anthropic/claude-haiku
+```
+
+Advanced users can route plugin summarization through a memsearch-managed API provider:
+
+```bash
+memsearch config set llm.providers.openai.type openai
+memsearch config set llm.providers.openai.model gpt-5-mini
+memsearch config set llm.providers.openai.api_key env:OPENAI_API_KEY
+memsearch config set plugins.codex.summarize.provider openai
+```
+
+Leave `plugins.<platform>.summarize.provider` empty or set it to `native` to preserve the default behavior. Plugin-specific summarize settings do not fall back to `llm.model`.
+
+You can also disable automatic capture for a project while keeping the plugin installed:
+
+```bash
+memsearch config set plugins.codex.summarize.enabled false --project
+```
+
+#### Advanced Memory Maintenance
+
+Plugins can optionally maintain higher-level project and user notes in the background. These tasks are disabled by default and run only when a plugin wakes them after a session/turn, the journal input changed, and `min_interval_hours` has elapsed.
+
+```bash
+memsearch config set plugins.codex.project_review.enabled true --project
+memsearch config set plugins.codex.project_review.provider native --project
+memsearch config set plugins.codex.project_review.min_interval_hours 24 --project
+memsearch config set plugins.codex.project_review.output_file .memsearch/PROJECT.md --project
+
+memsearch config set plugins.codex.user_profile.enabled true --project
+memsearch config set plugins.codex.user_profile.output_file .memsearch/USER.md --project
+```
+
+`project_review` summarizes durable project state such as active threads, decisions, risks, and next steps. `user_profile` captures reusable user preferences, working style, recurring goals, and background context. Both read `.memsearch/memory` by default; set `input_dir` if your journal files live somewhere else.
+
+Use `provider = "native"` to reuse the current agent's own non-interactive model path, or point the task at a named `[llm.providers.<name>]` API provider. Custom prompt files can be configured with `prompts.project_review` and `prompts.user_profile`.
+
+The `memory-config` skill, installed with the plugins, can inspect the current setup, explain these options, and make safe project-scoped changes from natural-language requests.
+
+### What can you use it for?
+
+- **Resume debugging threads** — ask how a similar Redis, Docker, database, or deployment issue was fixed last time.
+- **Recover decision rationale** — find why the project chose one architecture, library, migration path, or API design over another.
+- **Trace feature history** — understand how a feature evolved across sessions, including the files changed and tradeoffs discussed.
+- **Do code archaeology** — ask when and why a module, config, or workflow was changed before touching it again.
+- **Find the right session to resume** — ask which previous conversation covered a topic, recover the relevant context, and continue from there.
+- **Carry context across agents** — keep Claude Code, Codex CLI, OpenClaw, and OpenCode working from the same project memory.
 
 ---
 
@@ -384,7 +454,7 @@ async def agent_chat(user_input: str) -> str:
 
     # 2. Think — call LLM with memory context
     resp = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=[
             {"role": "system", "content": f"You have these memories:\n{context}"},
             {"role": "user", "content": user_input},
@@ -444,7 +514,7 @@ async def agent_chat(user_input: str) -> str:
 
     # 2. Think — call Claude with memory context
     resp = llm.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model="claude-sonnet-4-6",
         max_tokens=1024,
         system=f"You have these memories:\n{context}",
         messages=[{"role": "user", "content": user_input}],

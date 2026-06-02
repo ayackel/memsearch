@@ -86,10 +86,26 @@ Writing to: /home/user/.memsearch/config.toml
 -- Watch --
   Debounce (ms) [1500]:
 
--- Compact --
-  LLM provider [openai]:
-  LLM model (empty for default) []:
-  Prompt file path (empty for built-in) []:
+-- LLM (for memsearch compact) --
+  Provider (empty/openai/anthropic/gemini) []:
+  Model []:
+
+-- Plugin summarize routing --
+  Leave provider empty/native to keep each plugin's current native summarizer.
+  Codex automatic summaries enabled [Y/n]:
+  Codex summarize provider []:
+  Codex summarize model []:
+
+-- Advanced maintenance --
+  Disabled by default. Configure provider/model if you enable these tasks.
+  Codex project review enabled [y/N]:
+  Codex user profile enabled [y/N]:
+
+-- Prompts --
+  Leave empty to use built-in defaults.
+  Summarize prompt file (for plugin session notes) []:
+  Project review prompt file []:
+  User profile prompt file []:
 
 Config saved to /home/user/.memsearch/config.toml
 ```
@@ -123,6 +139,23 @@ Set embedding.provider = google in .memsearch.toml
 $ memsearch config set chunking.max_chunk_size 2000
 Set chunking.max_chunk_size = 2000 in /home/user/.memsearch/config.toml
 ```
+
+Plugin config keys use `plugins.<platform>.<task>.<field>`:
+
+```bash
+$ memsearch config set plugins.codex.summarize.enabled false --project
+Set plugins.codex.summarize.enabled = false in .memsearch.toml
+
+$ memsearch config set plugins.codex.project_review.enabled true --project
+Set plugins.codex.project_review.enabled = true in .memsearch.toml
+
+$ memsearch config set plugins.codex.project_review.output_file .memsearch/PROJECT.md --project
+Set plugins.codex.project_review.output_file = .memsearch/PROJECT.md in .memsearch.toml
+```
+
+Supported plugin platforms are `claude-code`, `codex`, `opencode`, and
+`openclaw`. Supported plugin tasks are `summarize`, `project_review`, and
+`user_profile`.
 
 #### `memsearch config get`
 
@@ -178,6 +211,28 @@ prompt_file = ""
 provider = ""
 model = ""
 
+[llm.providers.openai]
+type = "openai"
+model = "gpt-5-mini"
+base_url = ""
+api_key = "env:OPENAI_API_KEY"
+
+[plugins.claude-code.summarize]
+provider = ""
+model = ""
+
+[plugins.codex.summarize]
+provider = ""
+model = ""
+
+[plugins.opencode.summarize]
+provider = ""
+model = ""
+
+[plugins.openclaw.summarize]
+provider = ""
+model = ""
+
 [prompts]
 compact = ""
 summarize = ""
@@ -212,12 +267,26 @@ provider = "openai"
 | `compact.llm_provider` | string | `openai` | *(deprecated)* LLM provider for compact — use `llm.provider` instead |
 | `compact.llm_model` | string | `""` | *(deprecated)* LLM model — use `llm.model` instead |
 | `compact.prompt_file` | string | `""` | *(deprecated)* Prompt file — use `prompts.compact` instead |
-| `llm.provider` | string | `""` | LLM provider (empty = plugin decides / compact defaults to openai) |
-| `llm.model` | string | `""` | LLM model override |
+| `llm.provider` | string | `""` | LLM provider for `memsearch compact` (empty = compact defaults to openai) |
+| `llm.model` | string | `""` | LLM model override for `memsearch compact` |
 | `llm.base_url` | string | `""` | OpenAI-compatible API base URL |
 | `llm.api_key` | string | `""` | API key (supports `env:VAR_NAME` syntax) |
+| `llm.providers.<name>.type` | string | `""` | Named provider type for plugin summarization (`openai`, `openai-compatible`, `anthropic`, `gemini`) |
+| `llm.providers.<name>.model` | string | `""` | Default model for a named plugin summarization provider |
+| `llm.providers.<name>.base_url` | string | `""` | OpenAI-compatible API base URL for a named provider |
+| `llm.providers.<name>.api_key` | string | `""` | API key for a named provider (supports `env:VAR_NAME` syntax) |
+| `plugins.claude-code.summarize.provider` | string | `""` | Claude Code summarize provider route (empty/`native` = native summarizer) |
+| `plugins.claude-code.summarize.model` | string | `""` | Claude Code native model override, or named provider model override |
+| `plugins.codex.summarize.provider` | string | `""` | Codex summarize provider route (empty/`native` = native summarizer) |
+| `plugins.codex.summarize.model` | string | `""` | Codex native model override, or named provider model override |
+| `plugins.opencode.summarize.provider` | string | `""` | OpenCode summarize provider route (empty/`native` = native summarizer) |
+| `plugins.opencode.summarize.model` | string | `""` | OpenCode native model override, or named provider model override |
+| `plugins.openclaw.summarize.provider` | string | `""` | OpenClaw summarize provider route (empty/`native` = native summarizer) |
+| `plugins.openclaw.summarize.model` | string | `""` | OpenClaw native model override, or named provider model override |
 | `prompts.compact` | string | `""` | Custom prompt file for `memsearch compact` |
 | `prompts.summarize` | string | `""` | Custom prompt file for plugin session summarization |
+| `prompts.project_review` | string | `""` | Custom prompt file for plugin project maintenance |
+| `prompts.user_profile` | string | `""` | Custom prompt file for plugin user-profile maintenance |
 
 ---
 
@@ -437,9 +506,9 @@ Use an LLM to compress all indexed chunks (or a subset) into a condensed markdow
 
 | Provider | Default Model |
 |----------|--------------|
-| `openai` | `gpt-4o-mini` |
-| `anthropic` | `claude-sonnet-4-5-20250929` |
-| `gemini` | `gemini-2.0-flash` |
+| `openai` | `gpt-5-mini` |
+| `anthropic` | `claude-sonnet-4-6` |
+| `gemini` | `gemini-3-flash-preview` |
 
 ### Examples
 

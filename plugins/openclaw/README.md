@@ -16,9 +16,13 @@ Automatic persistent memory for [OpenClaw](https://github.com/openclaw/openclaw)
 uv tool install "memsearch[onnx]"
 
 # 2. Install the plugin from ClawHub
-openclaw plugins install clawhub:memsearch
+openclaw plugins install --force clawhub:memsearch
 
-# 3. Restart the gateway
+# 3. Allow memsearch to read conversation turns and inject recall context
+openclaw config set plugins.entries.memsearch.hooks.allowConversationAccess true
+openclaw config set plugins.entries.memsearch.hooks.allowPromptInjection true
+
+# 4. Restart the gateway
 openclaw gateway restart
 ```
 
@@ -31,9 +35,13 @@ uv tool install "memsearch[onnx]"
 # 2. Clone the repo and install the plugin
 git clone https://github.com/zilliztech/memsearch.git
 cd memsearch
-openclaw plugins install ./plugins/openclaw
+openclaw plugins install --force ./plugins/openclaw
 
-# 3. Restart the gateway
+# 3. Allow memsearch to read conversation turns and inject recall context
+openclaw config set plugins.entries.memsearch.hooks.allowConversationAccess true
+openclaw config set plugins.entries.memsearch.hooks.allowPromptInjection true
+
+# 4. Restart the gateway
 openclaw gateway restart
 ```
 
@@ -98,6 +106,23 @@ Optional settings via `openclaw plugins config memsearch`:
 | `autoCapture` | `true` | Auto-capture conversation summaries after each turn |
 | `autoRecall` | `true` | Auto-inject recent memories at agent start |
 
+To override only the OpenClaw native capture summarization model:
+
+```bash
+memsearch config set plugins.openclaw.summarize.model qwen3-coder
+```
+
+To use a memsearch-managed API provider instead:
+
+```bash
+memsearch config set llm.providers.openai.type openai
+memsearch config set llm.providers.openai.model gpt-5-mini
+memsearch config set llm.providers.openai.api_key env:OPENAI_API_KEY
+memsearch config set plugins.openclaw.summarize.provider openai
+```
+
+Leave `plugins.openclaw.summarize.provider` empty or set it to `native` to keep the default OpenClaw agent model. This setting does not fall back to `llm.model`.
+
 ## Memory files
 
 Each agent's memory is stored as plain markdown:
@@ -118,7 +143,8 @@ These files are human-readable, editable, and version-controllable. Milvus is a 
 ## Uninstall
 
 ```bash
-openclaw plugins install --remove memsearch
-# Or manually:
-rm -rf ~/.openclaw/extensions/memsearch
+openclaw plugins uninstall memsearch
+openclaw gateway restart
 ```
+
+Uninstalling the plugin does not delete memory files in `.memsearch/memory/`.

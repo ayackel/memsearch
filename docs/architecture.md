@@ -287,13 +287,37 @@ llm_provider = "openai"
 llm_model = ""
 prompt_file = ""
 
-[llm]                                  # LLM for compact & plugin summarization
-provider = ""                          # empty = plugin decides
+[llm]                                  # LLM for memsearch compact
+provider = ""                          # empty = compact defaults to openai
+model = ""
+
+[llm.providers.openai]                  # optional named providers for plugin summarization
+type = "openai"                         # openai/openai-compatible/anthropic/gemini
+model = "gpt-5-mini"
+base_url = ""
+api_key = "env:OPENAI_API_KEY"
+
+[plugins.claude-code.summarize]        # optional plugin summarize routing
+provider = ""                           # empty/native = plugin native summarizer
+model = ""                              # native model override, or API provider model override
+
+[plugins.codex.summarize]
+provider = ""
+model = ""
+
+[plugins.opencode.summarize]
+provider = ""
+model = ""
+
+[plugins.openclaw.summarize]
+provider = ""
 model = ""
 
 [prompts]
 compact = ""                           # custom compact prompt file
 summarize = ""                         # custom summarize prompt file
+project_review = ""                    # custom PROJECT.md maintenance prompt file
+user_profile = ""                      # custom USER.md maintenance prompt file
 
 [chunking]
 max_chunk_size = 1500

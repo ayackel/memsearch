@@ -79,6 +79,14 @@ run_worker() {
 
   ensure_memory_dir
 
+  local SUMMARIZE_ENABLED="true"
+  if memsearch_available; then
+    SUMMARIZE_ENABLED=$(_memsearch config get plugins.codex.summarize.enabled 2>/dev/null || echo "true")
+  fi
+  if [ "$SUMMARIZE_ENABLED" = "false" ]; then
+    return 0
+  fi
+
   # Load summarization prompt: user custom (via config) > plugin built-in template
   local AGENT_NAME="Codex"
   local PROMPT_FILE=""
@@ -91,35 +99,53 @@ run_worker() {
   elif [ -f "$SCRIPT_DIR/../prompts/summarize.txt" ]; then
     SYSTEM_PROMPT=$(sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$SCRIPT_DIR/../prompts/summarize.txt")
   else
-    SYSTEM_PROMPT="You are a third-person note-taker. Summarize the transcript as 2-6 bullet points. Write in third person. Output ONLY bullet points."
+    SYSTEM_PROMPT="You are a third-person note-taker. Summarize the transcript as 2-10 bullet points. Write in third person. Mandatory language rule: write every bullet in the same primary language as the [User] text. If User mixes languages, use the dominant user-facing language. Do NOT answer User's question. Output ONLY bullet points."
   fi
 
   local SUMMARY=""
-  if command -v codex &>/dev/null; then
+  local SUMMARIZE_PROVIDER=""
+  if [ -n "$MEMSEARCH_CMD" ]; then
+    SUMMARIZE_PROVIDER=$($MEMSEARCH_CMD config get plugins.codex.summarize.provider 2>/dev/null || true)
+  fi
+
+  if [ -n "$SUMMARIZE_PROVIDER" ] && [ "$SUMMARIZE_PROVIDER" != "native" ] && [ -n "$MEMSEARCH_CMD" ]; then
+    SUMMARY=$(printf '%s' "$CONTENT" | MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_STOP_WORKER=1 $MEMSEARCH_CMD summarize \
+      --plugin codex \
+      --agent-name "$AGENT_NAME" \
+      2>/dev/null || true)
+  elif command -v codex &>/dev/null; then
     local LLM_PROMPT
     LLM_PROMPT="${SYSTEM_PROMPT}
 
 Here is the transcript:
 
 ${CONTENT}"
+    local SUMMARIZE_MODEL="gpt-5.1-codex-mini"
+    if [ -n "$MEMSEARCH_CMD" ]; then
+      local CONFIG_MODEL
+      CONFIG_MODEL=$($MEMSEARCH_CMD config get plugins.codex.summarize.model 2>/dev/null || true)
+      if [ -n "$CONFIG_MODEL" ]; then
+        SUMMARIZE_MODEL="$CONFIG_MODEL"
+      fi
+    fi
 
     if command -v timeout &>/dev/null; then
       SUMMARY=$(MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_STOP_WORKER=1 timeout 30 codex exec \
         --ephemeral \
         --skip-git-repo-check \
         -s read-only \
-        -c features.codex_hooks=false \
+        -c features.hooks=false \
         -c model_reasoning_effort='"low"' \
-        -m gpt-5.1-codex-mini \
+        -m "$SUMMARIZE_MODEL" \
         "$LLM_PROMPT" 2>/dev/null || true)
     else
       SUMMARY=$(MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_STOP_WORKER=1 codex exec \
         --ephemeral \
         --skip-git-repo-check \
         -s read-only \
-        -c features.codex_hooks=false \
+        -c features.hooks=false \
         -c model_reasoning_effort='"low"' \
-        -m gpt-5.1-codex-mini \
+        -m "$SUMMARIZE_MODEL" \
         "$LLM_PROMPT" 2>/dev/null || true)
     fi
   fi
@@ -160,6 +186,8 @@ ${CONTENT}"
     kill_orphaned_index
     run_memsearch index "$MEMORY_DIR" >/dev/null
   fi
+
+  run_maintenance
 }
 
 if [ "${1:-}" = "--worker" ]; then
@@ -170,7 +198,7 @@ fi
 source "$SCRIPT_DIR/common.sh"
 
 # Defense-in-depth against recursion: the worker's `codex exec` passes
-# `features.codex_hooks=false`, but if a future build ignores that flag the
+# `features.hooks=false`, but if a future build ignores that flag the
 # nested Stop hook would spawn another worker. MEMSEARCH_IN_STOP_WORKER is
 # exported across the exec boundary so the nested invocation no-ops here.
 if [ -n "${MEMSEARCH_IN_STOP_WORKER:-}" ]; then
@@ -264,20 +292,37 @@ if [ -z "$USER_QUESTION" ]; then
 fi
 
 CONTENT=""
-if [ -n "$PARSED" ] && [ "$PARSED" != "(empty rollout)" ] && [ "$PARSED" != "(no user message found)" ] && [ "$PARSED" != "(empty turn)" ]; then
-  CONTENT="$PARSED"
-elif [ -n "$LAST_MSG" ] && [ -n "$USER_QUESTION" ]; then
-  CONTENT="[Human]: ${USER_QUESTION}
-[Codex]: ${LAST_MSG}"
+if [ -n "$LAST_MSG" ] && [ -n "$USER_QUESTION" ]; then
+  CONTENT="=== Final exchange, authoritative for outcome ===
+[User]: ${USER_QUESTION}
+[Codex final]: ${LAST_MSG}"
+  if [ -n "$PARSED" ] && [ "$PARSED" != "(empty rollout)" ] && [ "$PARSED" != "(no user message found)" ] && [ "$PARSED" != "(empty turn)" ]; then
+    CONTENT="${CONTENT}
+
+=== Additional conversation context ===
+${PARSED}"
+  fi
 elif [ -n "$LAST_MSG" ]; then
-  CONTENT="[Codex]: ${LAST_MSG}"
+  CONTENT="=== Final exchange, authoritative for outcome ===
+[Codex final]: ${LAST_MSG}"
+  if [ -n "$PARSED" ] && [ "$PARSED" != "(empty rollout)" ] && [ "$PARSED" != "(no user message found)" ] && [ "$PARSED" != "(empty turn)" ]; then
+    CONTENT="${CONTENT}
+
+=== Additional conversation context ===
+${PARSED}"
+  fi
+elif [ -n "$PARSED" ] && [ "$PARSED" != "(empty rollout)" ] && [ "$PARSED" != "(no user message found)" ] && [ "$PARSED" != "(empty turn)" ]; then
+  CONTENT="$PARSED"
+elif [ -n "$USER_QUESTION" ]; then
+  CONTENT="[User]: ${USER_QUESTION}"
 else
   echo '{}'
   exit 0
 fi
 
-if [ ${#CONTENT} -gt 4000 ]; then
-  CONTENT="${CONTENT:0:4000}...(truncated)"
+MAX_CONTENT_CHARS="${MEMSEARCH_SUMMARY_MAX_CHARS:-8000}"
+if [ ${#CONTENT} -gt "$MAX_CONTENT_CHARS" ]; then
+  CONTENT="${CONTENT:0:$MAX_CONTENT_CHARS}...(truncated)"
 fi
 
 WORK_FILE="$(mktemp "${TMPDIR:-/tmp}/memsearch-stop.XXXXXX.json")"

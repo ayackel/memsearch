@@ -230,7 +230,7 @@ async def agent_chat(user_input: str) -> str:
 
     # 2. Think — call LLM with memory context
     resp = llm.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=[
             {
                 "role": "system",
@@ -282,7 +282,7 @@ llm = Anthropic()
 
 # In agent_chat(), replace the OpenAI call with:
 resp = llm.messages.create(
-    model="claude-sonnet-4-5-20250929",
+    model="claude-sonnet-4-6",
     max_tokens=1024,
     system=f"You have these memories:\n{context}",
     messages=[{"role": "user", "content": user_input}],
@@ -565,13 +565,37 @@ llm_provider = "openai"
 llm_model = ""
 prompt_file = ""
 
-[llm]                        # LLM settings for compact & plugin summarization
-provider = ""                # empty = plugin decides; "openai"/"anthropic"/"gemini"
+[llm]                        # LLM settings for memsearch compact
+provider = ""                # empty = compact defaults to openai
 model = ""
+
+[llm.providers.openai]        # optional named providers for plugin summarization
+type = "openai"               # openai/openai-compatible/anthropic/gemini
+model = "gpt-5-mini"
+base_url = ""
+api_key = "env:OPENAI_API_KEY"
+
+[plugins.claude-code.summarize] # optional plugin-specific summarize routing
+provider = ""                 # empty/native = Claude Code native summarizer
+model = ""                    # native model override, or API provider model override
+
+[plugins.codex.summarize]
+provider = ""                 # empty/native = Codex native summarizer
+model = ""                    # empty = Codex plugin default
+
+[plugins.opencode.summarize]
+provider = ""                 # empty/native = OpenCode native summarizer
+model = ""                    # empty = OpenCode small_model/default behavior
+
+[plugins.openclaw.summarize]
+provider = ""                 # empty/native = OpenClaw native summarizer
+model = ""                    # empty = OpenClaw default agent model
 
 [prompts]                    # custom prompt template files
 compact = ""                 # for memsearch compact
 summarize = ""               # for plugin session summarization
+project_review = ""          # for plugin PROJECT.md maintenance
+user_profile = ""            # for plugin USER.md maintenance
 ```
 
 ### Environment variable references

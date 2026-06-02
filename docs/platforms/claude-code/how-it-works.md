@@ -45,7 +45,7 @@ The plugin defines 4 lifecycle hooks that map to Claude Code's session events:
 |------|------|-------|---------|-------------|
 | **SessionStart** | command | no | 10s | Start `memsearch watch`, write session heading, inject recent memories as cold-start context, display config status |
 | **UserPromptSubmit** | command | no | 15s | Return `systemMessage` hint "[memsearch] Memory available" (skips prompts < 10 chars) |
-| **Stop** | command | **yes** | 120s | Parse last turn from transcript, call `claude -p --model haiku` to summarize, append to daily `.md`, re-index |
+| **Stop** | command | **yes** | 120s | Parse last turn from transcript, summarize via native Haiku by default or configured API provider, append to daily `.md`, re-index |
 | **SessionEnd** | command | no | 10s | Stop the `memsearch watch` background process |
 
 All hooks output JSON to stdout -- `additionalContext` for context injection, `systemMessage` for visible hints, or empty `{}` for no-op. The `common.sh` shared library is sourced by every hook, providing JSON parsing, memsearch binary detection, and watch process management.
@@ -128,14 +128,14 @@ Step by step:
 
 3. **Last-turn extraction** -- `parse-transcript.sh` is a Python 3 script (no `jq` dependency) that extracts the last user question through to EOF. It outputs role-labeled text:
     ```
-    [Human] How do I fix the N+1 query in order-service?
+    [User] How do I fix the N+1 query in order-service?
     [Claude Code] Let me look at the order-service...
-    [Claude Code calls tool] Read src/order-service/db.py
-    [Tool output] (first 200 chars of file content)
     [Claude Code] The issue is in the get_orders function...
     ```
 
-4. **Haiku summarization** -- the extracted turn is piped to `claude -p --model haiku` with a system prompt instructing it to write 2-6 third-person bullet points. The third-person framing ("User asked about...", "Agent implemented...") makes the summaries more useful as memory entries than first-person notes.
+    Raw tool calls, tool outputs, and transient failure details are omitted from summarization input. The assistant's textual response can still mention important files, searches, refactors, findings, and tests, and the summarizer can record those naturally.
+
+4. **Haiku summarization** -- the extracted turn is piped to `claude -p --model haiku` with a system prompt instructing it to write 2-10 third-person bullet points in the same language as the user's message. Set `plugins.claude-code.summarize.model` to override only this native capture model. To use a memsearch-managed API provider instead, define `[llm.providers.<name>]` and set `plugins.claude-code.summarize.provider` to that name. Empty or `native` keeps the Haiku default. The third-person framing ("User asked about...", "Agent implemented...") makes the summaries more useful as memory entries than first-person notes.
 
 5. **Append with anchors** -- the summary is written to `.memsearch/memory/YYYY-MM-DD.md` under a `### HH:MM` heading with an HTML comment anchor:
     ```markdown
@@ -253,7 +253,7 @@ plugins/claude-code/
 | `common.sh` | Shared shell library sourced by all hooks. Handles stdin JSON parsing, PATH setup, memsearch binary detection (prefers PATH, falls back to `uv run`), memory directory management, and the watch singleton (start/stop with PID file and orphan cleanup). Changes here affect all hooks. |
 | `session-start.sh` | Starts the watcher, writes session heading, reads recent memory files for cold-start injection, checks for updates. |
 | `user-prompt-submit.sh` | Returns lightweight `systemMessage` hint. No search -- retrieval is handled by the memory-recall skill. |
-| `stop.sh` | Extracts transcript, validates it, calls `parse-transcript.sh`, summarizes via Haiku, appends with anchors. Has recursion guard (`stop_hook_active`) and sets `CLAUDECODE=` / `MEMSEARCH_NO_WATCH=1` on child processes. |
+| `stop.sh` | Extracts transcript, validates it, calls `parse-transcript.sh`, summarizes via native Haiku by default or configured API provider, appends with anchors. Has recursion guard (`stop_hook_active`) and sets `CLAUDECODE=` / `MEMSEARCH_NO_WATCH=1` on child processes. |
 | `parse-transcript.sh` | Standalone last-turn extractor using Python 3. Outputs role-labeled text. No `jq` dependency. |
 | `session-end.sh` | Calls `stop_watch` to terminate background watcher and clean up. |
 | `derive-collection.sh` | Generates a deterministic per-project Milvus collection name from the project path (e.g., `ms_myproject_a1b2c3`). |

@@ -62,6 +62,7 @@ OpenCode Session
     ├── chat.message hook ──→ Detect turn completion
     │                              │
     │                              ├── Extract last turn from SQLite
+    │                              ├── Persist turn metadata to .memsearch/opencode-turns.db
     │                              ├── Summarize via LLM (third-person notes)
     │                              └── Append to .memsearch/memory/YYYY-MM-DD.md
     │                                     │
@@ -106,7 +107,11 @@ We discussed the authentication flow before, what was the approach?
 |------|-------------|
 | `memory_search` | Semantic search over past memories. Returns ranked chunks. |
 | `memory_get` | Expand a chunk hash to see the full markdown section. |
-| `memory_transcript` | Read original conversation from OpenCode SQLite DB. |
+| `memory_transcript` | Read original conversation from OpenCode SQLite DB, optionally centered on a turn cursor. |
+
+`<project>/.memsearch/opencode-turns.db` stores derived capture checkpoints and
+turn ordering only. It is rebuildable state, not the source of truth for
+transcript recall.
 
 ## Memory Files
 
@@ -127,7 +132,7 @@ Each file contains timestamped entries with bullet-point summaries:
 ## Session 14:30
 
 ### 14:30
-<!-- session:ses_abc123 db:~/.local/share/opencode/opencode.db -->
+<!-- session:ses_abc123 turn:msg_123abc db:~/.local/share/opencode/opencode.db -->
 - User asked about the authentication flow.
 - Assistant explained the OAuth2 implementation in auth.ts.
 - Assistant modified the token refresh logic in refresh.ts.
@@ -143,13 +148,30 @@ memsearch config set embedding.provider openai
 export OPENAI_API_KEY=sk-...
 ```
 
+To override only the OpenCode native capture summarization model:
+
+```bash
+memsearch config set plugins.opencode.summarize.model anthropic/claude-haiku
+```
+
+To use a memsearch-managed API provider instead:
+
+```bash
+memsearch config set llm.providers.openai.type openai
+memsearch config set llm.providers.openai.model gpt-5-mini
+memsearch config set llm.providers.openai.api_key env:OPENAI_API_KEY
+memsearch config set plugins.opencode.summarize.provider openai
+```
+
+Leave `plugins.opencode.summarize.provider` empty or set it to `native` to keep the current `small_model` / plugin default behavior. This setting does not fall back to `llm.model`.
+
 ## How It Works
 
 1. **Capture**: After each conversation turn, the plugin extracts the user+assistant exchange, summarizes it via LLM, and appends to a daily markdown file.
 
 2. **Index**: The markdown files are indexed by memsearch into a Milvus collection (Milvus Lite by default, runs in-process).
 
-3. **Recall**: When the assistant needs historical context, it calls `memory_search` to find relevant chunks. Results can be expanded with `memory_get` or drilled into with `memory_transcript`.
+3. **Recall**: When the assistant needs historical context, it calls `memory_search` to find relevant chunks. Results can be expanded with `memory_get` or drilled into with `memory_transcript`, which reads the original transcript from OpenCode SQLite.
 
 4. **Cold-start**: At session start, recent memory bullets are injected into the system prompt so the assistant has immediate context.
 

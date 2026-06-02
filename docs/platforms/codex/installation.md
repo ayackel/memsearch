@@ -20,7 +20,7 @@ The installer:
 
 1. Copies the memory-recall skill to `~/.agents/skills/`
 2. Installs or updates memsearch hooks in `~/.codex/hooks.json`
-3. Enables `codex_hooks = true` in `~/.codex/config.toml`
+3. Enables `hooks = true` in `~/.codex/config.toml`
 4. Makes all scripts executable
 
 ## Usage
@@ -115,11 +115,13 @@ PY
 uv tool uninstall memsearch
 ```
 
+This removes only memsearch's Codex hook entries and skill. It preserves unrelated Codex hooks and does not delete project memory files in `.memsearch/memory/`.
+
 ## Updating
 
 ```bash
-# Update memsearch
-uv tool upgrade memsearch
+# Update memsearch with the ONNX extra preserved
+uv tool install -U "memsearch[onnx]"
 
 # Re-run installer to update hooks and skill
 bash memsearch/plugins/codex/scripts/install.sh

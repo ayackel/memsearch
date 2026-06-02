@@ -10,6 +10,7 @@ import tomli_w
 from memsearch.config import (
     EmbeddingConfig,
     MemSearchConfig,
+    PluginsConfig,
     _dict_to_config,
     deep_merge,
     get_config_value,
@@ -31,6 +32,16 @@ def test_default_config():
     assert cfg.chunking.overlap_lines == 2
     assert cfg.watch.debounce_ms == 1500
     assert cfg.compact.llm_provider == "openai"
+    assert cfg.llm.providers == {}
+    assert cfg.plugins.claude_code.summarize.provider == ""
+    assert cfg.plugins.claude_code.summarize.enabled is True
+    assert cfg.plugins.claude_code.summarize.model == ""
+    assert cfg.plugins.codex.summarize.model == ""
+    assert cfg.plugins.codex.project_review.enabled is False
+    assert cfg.plugins.codex.project_review.min_interval_hours == 24
+    assert cfg.plugins.codex.project_review.input_dir == ".memsearch/memory"
+    assert cfg.plugins.codex.project_review.output_file == ".memsearch/PROJECT.md"
+    assert cfg.plugins.codex.user_profile.output_file == ".memsearch/USER.md"
 
 
 def test_load_toml_file(tmp_path: Path):
@@ -127,6 +138,119 @@ def test_set_get_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert get_config_value("milvus.uri", cfg) == "http://roundtrip:19530"
 
 
+def test_plugin_summarize_model_config_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Plugin summarize models should be addressable by platform dotted keys."""
+    cfg_path = tmp_path / "config.toml"
+    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
+
+    set_config_value("plugins.claude-code.summarize.model", "claude-haiku-4-5")
+    set_config_value("plugins.codex.summarize.model", "gpt-5.1-codex-mini")
+    set_config_value("plugins.opencode.summarize.model", "anthropic/claude-haiku")
+    set_config_value("plugins.openclaw.summarize.model", "qwen3-coder")
+
+    cfg = resolve_config()
+    assert cfg.plugins.claude_code.summarize.model == "claude-haiku-4-5"
+    assert cfg.plugins.codex.summarize.model == "gpt-5.1-codex-mini"
+    assert cfg.plugins.opencode.summarize.model == "anthropic/claude-haiku"
+    assert cfg.plugins.openclaw.summarize.model == "qwen3-coder"
+    assert get_config_value("plugins.claude-code.summarize.model", cfg) == "claude-haiku-4-5"
+
+    saved = load_config_file(cfg_path)
+    assert saved["plugins"]["claude-code"]["summarize"]["model"] == "claude-haiku-4-5"
+
+
+def test_plugin_summarize_provider_config_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Plugin summarize provider routes should be addressable by dotted keys."""
+    cfg_path = tmp_path / "config.toml"
+    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
+
+    set_config_value("plugins.codex.summarize.provider", "openai")
+    set_config_value("plugins.opencode.summarize.provider", "native")
+
+    cfg = resolve_config()
+    assert cfg.plugins.codex.summarize.provider == "openai"
+    assert cfg.plugins.opencode.summarize.provider == "native"
+    assert get_config_value("plugins.codex.summarize.provider", cfg) == "openai"
+
+    saved = load_config_file(cfg_path)
+    assert saved["plugins"]["codex"]["summarize"]["provider"] == "openai"
+
+
+def test_plugin_maintenance_config_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Plugin maintenance tasks should be addressable by dotted keys."""
+    cfg_path = tmp_path / "config.toml"
+    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
+
+    set_config_value("plugins.codex.project_review.enabled", "true")
+    set_config_value("plugins.codex.project_review.provider", "openai")
+    set_config_value("plugins.codex.project_review.min_interval_hours", "12")
+    set_config_value("plugins.codex.project_review.input_dir", "memory-journals")
+    set_config_value("plugins.codex.project_review.output_file", ".memsearch/AGENTS.md")
+    set_config_value("plugins.codex.user_profile.enabled", "false")
+
+    cfg = resolve_config()
+    assert cfg.plugins.codex.project_review.enabled is True
+    assert cfg.plugins.codex.project_review.provider == "openai"
+    assert cfg.plugins.codex.project_review.min_interval_hours == 12
+    assert cfg.plugins.codex.project_review.input_dir == "memory-journals"
+    assert cfg.plugins.codex.project_review.output_file == ".memsearch/AGENTS.md"
+    assert cfg.plugins.codex.user_profile.enabled is False
+
+    saved = load_config_file(cfg_path)
+    assert saved["plugins"]["codex"]["project_review"]["enabled"] is True
+    assert saved["plugins"]["codex"]["project_review"]["min_interval_hours"] == 12
+
+
+def test_named_llm_provider_config_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Named LLM providers should round-trip through TOML and dotted config keys."""
+    cfg_path = tmp_path / "config.toml"
+    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_path)
+    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
+    set_config_value("llm.providers.openai.type", "openai")
+    set_config_value("llm.providers.openai.model", "gpt-test")
+    set_config_value("llm.providers.openai.api_key", "env:OPENAI_API_KEY")
+    set_config_value("llm.providers.local.type", "openai-compatible")
+    set_config_value("llm.providers.local.base_url", "http://localhost:11434/v1")
+
+    cfg = resolve_config()
+    assert cfg.llm.providers["openai"].type == "openai"
+    assert cfg.llm.providers["openai"].model == "gpt-test"
+    assert cfg.llm.providers["openai"].api_key == "env:OPENAI_API_KEY"
+    assert cfg.llm.providers["local"].type == "openai-compatible"
+    assert get_config_value("llm.providers.local.base_url", cfg) == "http://localhost:11434/v1"
+
+    saved = load_config_file(cfg_path)
+    assert saved["llm"]["providers"]["openai"]["model"] == "gpt-test"
+    assert saved["llm"]["providers"]["openai"]["api_key"] == "env:OPENAI_API_KEY"
+
+
+def test_plugin_summarize_model_empty_preserves_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Empty plugin summarize values should remain empty in resolved config."""
+    cfg_file = tmp_path / "config.toml"
+    save_config(
+        {
+            "llm": {"model": "global-model-should-not-apply"},
+            "plugins": {
+                "claude-code": {"summarize": {"model": ""}},
+                "codex": {"summarize": {}},
+            },
+        },
+        cfg_file,
+    )
+
+    monkeypatch.setattr("memsearch.config.GLOBAL_CONFIG_PATH", cfg_file)
+    monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
+
+    cfg = resolve_config()
+    assert cfg.llm.model == "global-model-should-not-apply"
+    assert cfg.plugins.claude_code.summarize.model == ""
+    assert cfg.plugins.codex.summarize.model == ""
+    assert get_config_value("plugins.codex.summarize.model", cfg) == ""
+
+
 def test_set_config_value_int_conversion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """set_config_value should auto-convert int fields from strings."""
     cfg_path = tmp_path / "config.toml"
@@ -156,6 +280,12 @@ def test_set_config_value_writes_to_project_config_when_requested(tmp_path: Path
     [
         ("milvus", "x", ValueError, "Key must be section\\.field"),
         ("bad.uri", "x", KeyError, "Unknown config section: bad"),
+        (
+            "plugins.bad.summarize.model",
+            "x",
+            KeyError,
+            "Unknown plugin platform: bad",
+        ),
         (
             "milvus.not_a_field",
             "x",
@@ -286,6 +416,15 @@ def test_embedding_config_new_fields():
     assert cfg.api_key == ""
 
 
+def test_plugins_config_defaults():
+    """PluginsConfig should expose the supported platform summarize model keys."""
+    cfg = PluginsConfig()
+    assert cfg.claude_code.summarize.model == ""
+    assert cfg.codex.summarize.model == ""
+    assert cfg.opencode.summarize.model == ""
+    assert cfg.openclaw.summarize.model == ""
+
+
 def test_compact_config_new_fields():
     """CompactConfig should have base_url and api_key fields with empty defaults."""
     from memsearch.config import CompactConfig
@@ -346,6 +485,13 @@ def test_dict_to_config_ignores_unknown_fields_and_non_dict_sections() -> None:
                 "llm_model": "claude-3-7-sonnet",
                 "extra": True,
             },
+            "plugins": {
+                "claude-code": {
+                    "summarize": {"model": "haiku", "provider": "ignored"},
+                    "future": "ignored",
+                },
+                "unknown-plugin": {"summarize": {"model": "ignored"}},
+            },
             "unknown_section": {"foo": "bar"},
         }
     )
@@ -355,6 +501,8 @@ def test_dict_to_config_ignores_unknown_fields_and_non_dict_sections() -> None:
     assert cfg.milvus.uri == "~/.memsearch/milvus.db"
     assert cfg.compact.llm_provider == "anthropic"
     assert cfg.compact.llm_model == "claude-3-7-sonnet"
+    assert cfg.plugins.claude_code.summarize.model == "haiku"
+    assert cfg.plugins.codex.summarize.model == ""
 
 
 def test_dict_to_config_accepts_empty_section_dicts() -> None:

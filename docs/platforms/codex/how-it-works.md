@@ -101,7 +101,7 @@ graph TD
     D -->|No| E2["history.jsonl + last_assistant_message<br/>Recover latest user turn"]
     E --> F{"codex exec available?"}
     E2 --> F
-    F -->|Yes| G["codex exec --ephemeral<br/>-s read-only -c features.codex_hooks=false<br/>-m gpt-5.1-codex-mini"]
+    F -->|Yes| G["codex exec --ephemeral<br/>-s read-only -c features.hooks=false<br/>-m gpt-5.1-codex-mini"]
     F -->|No| H["Local fallback<br/>Truncate raw text"]
     G --> I["Append to YYYY-MM-DD.md<br/>with rollout anchors"]
     H --> I
@@ -118,6 +118,7 @@ The plugin handles both cases:
 
 - If `transcript_path` exists, it parses the rollout with `parse-rollout.sh` and keeps the richer rollout anchor for L3 drill-down.
 - If `transcript_path` is missing, it falls back to the latest matching user prompt in `~/.codex/history.jsonl` plus `last_assistant_message`.
+- For summarization input, the final user/assistant exchange is placed first. Tool calls and tool outputs from the activity log are omitted so the summary focuses on the concrete task result.
 
 This keeps memory capture working on current Codex releases, but rollout drill-down is now **best-effort** rather than guaranteed.
 
@@ -128,12 +129,14 @@ The Stop hook calls `codex exec` for LLM summarization. To prevent **hook recurs
 ```bash
 MEMSEARCH_NO_WATCH=1 \
   codex exec --ephemeral --skip-git-repo-check -s read-only \
-  -c features.codex_hooks=false \
+  -c features.hooks=false \
   -c model_reasoning_effort='"low"' \
   -m gpt-5.1-codex-mini "$LLM_PROMPT"
 ```
 
 This avoids assuming `~/.codex/auth.json` exists. Installations that authenticate through Codex's default keyring flow still work, and the child `codex exec` cannot recurse because hooks are disabled explicitly.
+
+Set `plugins.codex.summarize.model` to override only this native capture model. Empty or unset keeps the built-in Codex plugin default. To use a memsearch-managed API provider instead, define `[llm.providers.<name>]` and set `plugins.codex.summarize.provider` to that name. Empty or `native` preserves the current behavior, and this setting does not fall back to `llm.model`.
 
 ### Local Fallback
 
@@ -251,7 +254,7 @@ When the `rollout:` anchor is populated, the memory-recall skill can use `parse-
 |--------|-------------|-------------------|
 | **SessionEnd hook** | Not available -- orphans cleaned at next SessionStart | Available -- clean shutdown |
 | **Summarizer** | `codex exec -m gpt-5.1-codex-mini` | `claude -p --model haiku` |
-| **Recursion prevention** | `features.codex_hooks=false` on child `codex exec` | `stop_hook_active` flag + `CLAUDECODE=` |
+| **Recursion prevention** | `features.hooks=false` on child `codex exec` | `stop_hook_active` flag + `CLAUDECODE=` |
 | **Skill context** | Main context (no `context: fork`) | Forked subagent (`context: fork`) |
 | **Milvus Lite** | One-time index + skip re-index in Stop | Same approach via `start_watch()` logic |
 | **Auto-install** | Bootstrap installs `uv` if missing | Requires pre-installed memsearch |
@@ -285,4 +288,4 @@ plugins/codex/
 | `user-prompt-submit.sh` | Return lightweight `systemMessage` hint about memory availability. |
 | `SKILL.md` | Memory recall skill with `__INSTALL_DIR__` placeholder (resolved at install time). Includes direct file read fallback for L2 in case `memsearch expand` hits sandbox restrictions. |
 | `install.sh` | One-click installer: checks/installs memsearch, copies the skill, installs or updates memsearch hook entries in `hooks.json`, and enables the experimental hooks feature flag. |
-| `parse-rollout.sh` | Parses Codex rollout JSONL files, extracting the last user message through EOF with role labels. |
+| `parse-rollout.sh` | Parses Codex rollout JSONL files, extracting the last user message through EOF with role labels while skipping tool calls and tool output. |

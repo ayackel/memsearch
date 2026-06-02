@@ -150,6 +150,11 @@ function extractText(content: any): string {
     .trim();
 }
 
+function tailTruncate(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `...(truncated to tail)\n${text.slice(-maxChars)}`;
+}
+
 /**
  * Extract the last user+assistant turn from an array of messages.
  * Returns a formatted string or null if no valid turn found.
@@ -201,10 +206,9 @@ function extractLastTurn(messages: any[]): string | null {
       // Strip injected memory context — only capture the user's actual message
       text = stripInjectedContext(text);
       if (!text || text.length < 5) continue;
-      parts.push(`[Human]: ${text}`);
+      parts.push(`[User]: ${text}`);
     } else if (role === "assistant") {
-      // Truncate long assistant responses
-      parts.push(`[Assistant]: ${text.slice(0, 3000)}`);
+      parts.push(`[Assistant]: ${tailTruncate(text, 3000)}`);
     }
   }
 
@@ -291,6 +295,35 @@ export default {
       // 4. Last resort: hope memsearch is somewhere in PATH at runtime
       _memsearchCmd = "memsearch";
       return _memsearchCmd;
+    }
+
+    async function getMemsearchConfigValue(key: string): Promise<string> {
+      const cmd = await getMemsearchCmd();
+      const r = await runCmd(
+        ["bash", "-c", `${cmd} config get '${shellEscape(key)}'`],
+        { timeoutMs: 5000 }
+      );
+      return r.stdout?.trim() || "";
+    }
+
+    async function wakeMaintenance(): Promise<void> {
+      try {
+        const runner = join(PLUGIN_DIR, "scripts", "maintenance-runner.py");
+        runCmd(
+          [
+            "bash", "-c",
+            `python3 '${shellEscape(runner)}' --platform openclaw ` +
+              `--project-dir '${shellEscape(projectDir)}' ` +
+              `--memsearch-dir '${shellEscape(memsearchDir)}'`,
+          ],
+          {
+            timeoutMs: 120000,
+            env: envWithOverrides({ MEMSEARCH_NO_WATCH: "1", MEMSEARCH_DISABLE: "1" }),
+          }
+        ).catch(() => { /* ignore */ });
+      } catch {
+        /* ignore */
+      }
     }
 
     // --- Lazy-cached collection name derivation ---
@@ -467,7 +500,7 @@ export default {
             "Retrieve the original conversation from a past session transcript. " +
             "Use after memory_get when the expanded result contains a transcript " +
             "anchor (<!-- session:UUID transcript:PATH -->). Returns the formatted " +
-            "dialogue with [Human] and [Assistant] labels.",
+            "dialogue with [User] and [Assistant] labels.",
           parameters: {
             type: "object" as const,
             properties: {
@@ -544,8 +577,7 @@ export default {
         // Try reading user-custom prompt from config
         let customPromptFile = "";
         try {
-          const r = await runCmd([memsearchCmd, "config", "get", "prompts.summarize"], { timeoutMs: 5000 });
-          customPromptFile = r.stdout?.trim() || "";
+          customPromptFile = await getMemsearchConfigValue("prompts.summarize");
         } catch { /* ignore */ }
 
         if (customPromptFile && existsSync(customPromptFile)) {
@@ -557,18 +589,53 @@ export default {
             systemPrompt = readFileSync(builtinPath, "utf-8").replace(/\{\{AGENT_NAME\}\}/g, agentName);
           } else {
             systemPrompt =
-              "You are a third-person note-taker. Summarize the transcript as 2-6 bullet points. " +
-              "Write in third person. Output ONLY bullet points.";
+              "You are a third-person note-taker. Summarize the transcript as 2-10 bullet points. " +
+              "Write in third person. Mandatory language rule: write every bullet in the same primary language as the " +
+              "[User] text. If User mixes languages, use the dominant user-facing language. " +
+              "Do NOT answer User's question. Output ONLY bullet points.";
           }
         }
 
-        // 1. Try openclaw agent (uses user's default model)
+        let summarizeModel = "";
+        try {
+          summarizeModel = await getMemsearchConfigValue("plugins.openclaw.summarize.model");
+        } catch { /* ignore */ }
+
+        let summarizeProvider = "";
+        try {
+          summarizeProvider = await getMemsearchConfigValue("plugins.openclaw.summarize.provider");
+        } catch { /* ignore */ }
+
+        if (summarizeProvider && summarizeProvider !== "native") {
+          try {
+            const cmd = await getMemsearchCmd();
+            const tmpInput = `/tmp/memsearch-summarize-input-${Date.now()}.txt`;
+            writeFileSync(tmpInput, turnText, "utf-8");
+            const shellCmd =
+              `cat ${JSON.stringify(tmpInput)} | ${cmd} summarize ` +
+              `--plugin openclaw --agent-name OpenClaw`;
+            const result = await runCmd(["bash", "-c", shellCmd], {
+              timeoutMs: 60000,
+              env: envWithOverrides({ MEMSEARCH_NO_WATCH: "1", MEMSEARCH_DISABLE: "1" }),
+            });
+            try { unlinkSync(tmpInput); } catch { /* ignore cleanup errors */ }
+            const output = (result.stdout || "").trim();
+            if (output) {
+              return output;
+            }
+          } catch {
+            /* timeout or exec error — fall through to fallback */
+          }
+        }
+
+        // 1. Try openclaw agent (uses user's default model unless overridden)
         // Redirect stdout to a temp file because runCommandWithTimeout
         // truncates stdout before the LLM response arrives.
         try {
           const msgText = `${systemPrompt}\n\nTranscript:\n${turnText}`;
           const tmpFile = `/tmp/memsearch-summarize-${Date.now()}.txt`;
-          const shellCmd = `openclaw agent --local --session-id memsearch-summarize -m ${JSON.stringify(msgText)} > ${JSON.stringify(tmpFile)} 2>/dev/null`;
+          const modelArg = summarizeModel ? ` --model ${JSON.stringify(summarizeModel)}` : "";
+          const shellCmd = `openclaw agent --local --session-id memsearch-summarize${modelArg} -m ${JSON.stringify(msgText)} > ${JSON.stringify(tmpFile)} 2>/dev/null`;
           await runCmd(["bash", "-c", shellCmd], {
             timeoutMs: 60000,
             env: envWithOverrides({ MEMSEARCH_NO_WATCH: "1", MEMSEARCH_DISABLE: "1" }),
@@ -591,7 +658,7 @@ export default {
         }
 
         // 2. Fallback: return raw text (truncated)
-        return turnText.length > 1500 ? turnText.slice(0, 1500) + "\n..." : turnText;
+        return tailTruncate(turnText, 1500);
       }
 
       /** Write a turn summary to the daily memory file and re-index. */
@@ -662,11 +729,21 @@ export default {
         const messages = event.messages || [];
         if (messages.length < 2) return;
 
+        let summarizeEnabled = "true";
+        try {
+          summarizeEnabled = await getMemsearchConfigValue("plugins.openclaw.summarize.enabled");
+        } catch { /* ignore */ }
+        if (summarizeEnabled === "false") {
+          wakeMaintenance().catch(() => { /* ignore */ });
+          return;
+        }
+
         const lastTurn = extractLastTurn(messages);
         if (!lastTurn || lastTurn.length < 50) return;
 
         const sessionId = event.sessionId || "";
-        writeTurnCapture(lastTurn, sessionId);
+        await writeTurnCapture(lastTurn, sessionId);
+        wakeMaintenance().catch(() => { /* ignore */ });
       });
     }
 

@@ -54,6 +54,12 @@ fi
 
 ensure_memory_dir
 
+SUMMARIZE_ENABLED=$($MEMSEARCH_CMD config get plugins.claude-code.summarize.enabled 2>/dev/null || echo "true")
+if [ "$SUMMARIZE_ENABLED" = "false" ]; then
+  echo '{}'
+  exit 0
+fi
+
 # Parse transcript — extract the last turn only (one user question + all responses)
 PARSED=$("$SCRIPT_DIR/parse-transcript.sh" "$TRANSCRIPT_PATH" 2>/dev/null || true)
 
@@ -76,8 +82,17 @@ with open(sys.argv[1]) as f:
     for line in f:
         try:
             obj = json.loads(line)
-            if obj.get('type') == 'user' and isinstance(obj.get('message', {}).get('content'), str):
+            if obj.get('type') != 'user' or obj.get('isMeta'):
+                continue
+            content = obj.get('message', {}).get('content')
+            if isinstance(content, str) and content.strip():
                 uuid = obj.get('uuid', '')
+                continue
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'text' and block.get('text', '').strip():
+                        uuid = obj.get('uuid', '')
+                        break
         except: pass
 print(uuid)
 " "$TRANSCRIPT_PATH" 2>/dev/null || true)
@@ -93,19 +108,44 @@ if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
 elif [ -f "${CLAUDE_PLUGIN_ROOT}/prompts/summarize.txt" ]; then
   SYSTEM_PROMPT=$(sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "${CLAUDE_PLUGIN_ROOT}/prompts/summarize.txt")
 else
-  SYSTEM_PROMPT="You are a third-person note-taker. Summarize the transcript as 2-6 bullet points. Write in third person. Output ONLY bullet points."
+  SYSTEM_PROMPT="You are a third-person note-taker. Summarize the transcript as 2-10 bullet points. Write in third person. Mandatory language rule: write every bullet in the same primary language as the [User] text. If User mixes languages, use the dominant user-facing language. Do NOT answer User's question. Output ONLY bullet points."
 fi
 
 # Summarize the last turn into structured bullet points.
-# Default: use claude -p (plugin's own agent). If [llm] is configured, still
-# use claude -p since it's the most reliable path for Claude Code plugin.
+# Default: use claude -p with the plugin default model. A plugin-specific
+# summarize model override can replace the model without changing provider
+# routing.
 SUMMARY=""
-if command -v claude &>/dev/null; then
-  SUMMARY=$(printf '%s' "$PARSED" | MEMSEARCH_NO_WATCH=1 CLAUDECODE= claude -p \
-    --model haiku \
+SUMMARIZE_PROVIDER=""
+if [ -n "$MEMSEARCH_CMD" ]; then
+  SUMMARIZE_PROVIDER=$($MEMSEARCH_CMD config get plugins.claude-code.summarize.provider 2>/dev/null || true)
+fi
+
+if [ -n "$SUMMARIZE_PROVIDER" ] && [ "$SUMMARIZE_PROVIDER" != "native" ] && [ -n "$MEMSEARCH_CMD" ]; then
+  SUMMARY=$(printf '%s' "$PARSED" | MEMSEARCH_NO_WATCH=1 $MEMSEARCH_CMD summarize \
+    --plugin claude-code \
+    --agent-name "$AGENT_NAME" \
+    2>/dev/null || true)
+elif command -v claude &>/dev/null; then
+  SUMMARIZE_MODEL="haiku"
+  if [ -n "$MEMSEARCH_CMD" ]; then
+    CONFIG_MODEL=$($MEMSEARCH_CMD config get plugins.claude-code.summarize.model 2>/dev/null || true)
+    if [ -n "$CONFIG_MODEL" ]; then
+      SUMMARIZE_MODEL="$CONFIG_MODEL"
+    fi
+  fi
+  # Keep the shared external-observer prompt, but pass it as the primary prompt.
+  # This avoids the stdin + --system-prompt path while preserving summary rules.
+  LLM_PROMPT="${SYSTEM_PROMPT}
+
+Transcript:
+${PARSED}"
+  SUMMARY=$(MEMSEARCH_NO_WATCH=1 CLAUDECODE= claude -p \
+    --strict-mcp-config \
+    --model "$SUMMARIZE_MODEL" \
     --no-session-persistence \
     --no-chrome \
-    --system-prompt "$SYSTEM_PROMPT" \
+    "$LLM_PROMPT" \
     2>/dev/null || true)
 fi
 

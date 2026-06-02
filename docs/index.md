@@ -10,6 +10,15 @@
 
 Pick your platform, install the plugin, and you're done. memsearch captures conversations, indexes them with hybrid search, and recalls relevant context when your agent needs it.
 
+### What can you use it for?
+
+- **Resume debugging threads** — ask how a similar Redis, Docker, database, or deployment issue was fixed last time.
+- **Recover decision rationale** — find why the project chose one architecture, library, migration path, or API design over another.
+- **Trace feature history** — understand how a feature evolved across sessions, including the files changed and tradeoffs discussed.
+- **Do code archaeology** — ask when and why a module, config, or workflow was changed before touching it again.
+- **Find the right session to resume** — ask which previous conversation covered a topic, recover the relevant context, and continue from there.
+- **Carry context across agents** — keep Claude Code, Codex CLI, OpenClaw, and OpenCode working from the same project memory.
+
 ### Claude Code Plugin
 
 The most mature plugin. Marketplace install, zero config.
@@ -20,7 +29,7 @@ The most mature plugin. Marketplace install, zero config.
 /plugin install memsearch
 ```
 
-Shell hooks + SKILL.md with `context: fork` subagent. Conversations are auto-summarized via Haiku and recalled via semantic search -- all without polluting your main context window.
+Shell hooks + SKILL.md with `context: fork` subagent. Conversations are auto-summarized by the native CLI by default, with optional API provider routing, and recalled via semantic search -- all without polluting your main context window.
 
 [:octicons-arrow-right-24: Claude Code Plugin docs](platforms/claude-code/index.md){ .md-button .md-button--primary }
 [:octicons-arrow-right-24: Troubleshooting](platforms/claude-code/troubleshooting.md){ .md-button }
@@ -30,7 +39,9 @@ Shell hooks + SKILL.md with `context: fork` subagent. Conversations are auto-sum
 Native TypeScript plugin with `kind: memory`. Per-workspace memory isolation out of the box.
 
 ```bash
-openclaw plugins install clawhub:memsearch
+openclaw plugins install --force clawhub:memsearch
+openclaw config set plugins.entries.memsearch.hooks.allowConversationAccess true
+openclaw config set plugins.entries.memsearch.hooks.allowPromptInjection true
 openclaw gateway restart
 ```
 
@@ -69,7 +80,7 @@ All platforms share the same markdown memory format and derive collection names 
 | **Plugin type** | Shell hooks | TS plugin | TS plugin | Shell hooks |
 | **Capture** | Stop hook + Haiku | agent_end hook | SQLite daemon | Stop hook + Codex |
 | **Recall** | SKILL.md (fork) | memory_search tool | memory_search tool | SKILL.md |
-| **Install** | Plugin marketplace | `openclaw plugins install` | npm + opencode.json | `install.sh` |
+| **Install** | Plugin marketplace | `openclaw plugins install --force` + hook permissions | npm + opencode.json | `install.sh` |
 
 [:octicons-arrow-right-24: Platform comparison](platforms/index.md){ .md-button }
 

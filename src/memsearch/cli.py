@@ -112,6 +112,39 @@ def _normalize_compact_source(source: str | None) -> str | None:
     return source
 
 
+def _plugin_summarize_config(cfg: MemSearchConfig, plugin: str) -> dict:
+    """Return TOML-facing summarize config for a plugin platform."""
+    plugins = config_to_dict(cfg).get("plugins", {})
+    plugin_cfg = plugins.get(plugin)
+    if not isinstance(plugin_cfg, dict):
+        raise KeyError(f"Unknown plugin platform: {plugin}")
+    summarize = plugin_cfg.get("summarize", {})
+    if not isinstance(summarize, dict):
+        return {}
+    return summarize
+
+
+def _load_plugin_summarize_prompt(cfg: MemSearchConfig, agent_name: str) -> str:
+    """Load the plugin summarize prompt template."""
+    if cfg.prompts.summarize:
+        prompt_path = Path(cfg.prompts.summarize).expanduser()
+        if prompt_path.is_file():
+            return prompt_path.read_text(encoding="utf-8").replace("{{AGENT_NAME}}", agent_name)
+    return (
+        "You are a third-person note-taker. You will receive a transcript of ONE conversation turn "
+        f"between User and {agent_name}.\n\n"
+        "Record what happened as factual third-person notes. Output 2-10 bullet points, each starting with '- '. "
+        "Use 'User' for the user. First bullet: what User asked or wanted. Remaining bullets: what was done, "
+        f"found, changed, configured, tested, explained, decided, or could not be completed by {agent_name}. "
+        "Mandatory language rule: write every bullet in the same primary language as the [User] text. "
+        "If User mixes languages, use the dominant user-facing language. "
+        "Be specific when useful: mention important files read or edited, searches or research performed, "
+        "refactors, commands or tests run, key findings, and concrete outcomes. Prefer the final user-visible "
+        "outcome over low-level transcript mechanics. Do NOT answer User's question yourself. Output ONLY "
+        "bullet points."
+    )
+
+
 # -- Common CLI options --
 
 
@@ -602,6 +635,55 @@ def compact(
 
 
 @cli.command()
+@click.option("--plugin", required=True, help="Plugin platform name (claude-code, codex, opencode, openclaw).")
+@click.option("--agent-name", default="", help="Agent display name for the summarize prompt.")
+def summarize(plugin: str, agent_name: str) -> None:
+    """Summarize stdin using a configured memsearch-managed LLM provider."""
+    from .compact import summarize_text
+
+    cfg = _safe_resolve_config()
+    summarize_cfg = _plugin_summarize_config(cfg, plugin)
+    provider_name = str(summarize_cfg.get("provider") or "").strip()
+    if not provider_name or provider_name == "native":
+        click.echo(
+            f"Plugin {plugin!r} is configured for native summarization; no memsearch-managed provider selected.",
+            err=True,
+        )
+        raise SystemExit(2)
+
+    provider_cfg = cfg.llm.providers.get(provider_name)
+    if provider_cfg is None:
+        click.echo(f"Unknown LLM provider {provider_name!r}. Configure [llm.providers.{provider_name}].", err=True)
+        raise SystemExit(1)
+
+    provider_type = provider_cfg.type or provider_name
+    model = str(summarize_cfg.get("model") or provider_cfg.model or "").strip() or None
+    transcript = sys.stdin.read()
+    if not transcript.strip():
+        return
+
+    prompt_agent_name = agent_name or plugin
+    system_prompt = _load_plugin_summarize_prompt(cfg, prompt_agent_name)
+    prompt = f"{system_prompt}\n\nTranscript:\n{transcript}"
+    try:
+        summary = _run(
+            summarize_text(
+                prompt,
+                llm_provider=provider_type,
+                model=model,
+                base_url=provider_cfg.base_url or None,
+                api_key=provider_cfg.api_key or None,
+            )
+        )
+    except (ConfigEnvVarError, ValueError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1) from None
+
+    if summary:
+        click.echo(summary)
+
+
+@cli.command()
 @click.option("--collection", "-c", default=None, help="Milvus collection name.")
 @click.option("--milvus-uri", default=None, help="Milvus connection URI.")
 @click.option("--milvus-token", default=None, help="Milvus auth token.")
@@ -772,12 +854,12 @@ def config_init(project: bool) -> None:
     )
 
     # LLM
-    click.echo("\n── LLM (for compact & plugin summarization) ──")
-    click.echo("  Leave empty to let plugins use their own agent model.")
+    click.echo("\n── LLM (for memsearch compact) ──")
+    click.echo("  Plugin summarization uses plugins.<platform>.summarize.model.")
     _llm_defaults = {
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-haiku-4-5-20251001",
-        "gemini": "gemini-2.0-flash",
+        "openai": "gpt-5-mini",
+        "anthropic": "claude-sonnet-4-6",
+        "gemini": "gemini-3-flash-preview",
     }
     result["llm"] = {}
     result["llm"]["provider"] = click.prompt(
@@ -799,6 +881,86 @@ def config_init(project: bool) -> None:
         default=current.llm.api_key,
     )
 
+    # Plugin summarize model overrides
+    click.echo("\n── Plugin summarize routing ──")
+    click.echo("  Leave provider empty/native to keep each plugin's current native summarizer.")
+    result["plugins"] = {
+        "claude-code": {"summarize": {}, "project_review": {}, "user_profile": {}},
+        "codex": {"summarize": {}, "project_review": {}, "user_profile": {}},
+        "opencode": {"summarize": {}, "project_review": {}, "user_profile": {}},
+        "openclaw": {"summarize": {}, "project_review": {}, "user_profile": {}},
+    }
+    result["plugins"]["claude-code"]["summarize"]["enabled"] = click.confirm(
+        "  Claude Code automatic summaries enabled",
+        default=current.plugins.claude_code.summarize.enabled,
+    )
+    result["plugins"]["claude-code"]["summarize"]["provider"] = click.prompt(
+        "  Claude Code summarize provider",
+        default=current.plugins.claude_code.summarize.provider,
+    )
+    result["plugins"]["claude-code"]["summarize"]["model"] = click.prompt(
+        "  Claude Code summarize model",
+        default=current.plugins.claude_code.summarize.model,
+    )
+    result["plugins"]["codex"]["summarize"]["enabled"] = click.confirm(
+        "  Codex automatic summaries enabled",
+        default=current.plugins.codex.summarize.enabled,
+    )
+    result["plugins"]["codex"]["summarize"]["provider"] = click.prompt(
+        "  Codex summarize provider",
+        default=current.plugins.codex.summarize.provider,
+    )
+    result["plugins"]["codex"]["summarize"]["model"] = click.prompt(
+        "  Codex summarize model",
+        default=current.plugins.codex.summarize.model,
+    )
+    result["plugins"]["opencode"]["summarize"]["enabled"] = click.confirm(
+        "  OpenCode automatic summaries enabled",
+        default=current.plugins.opencode.summarize.enabled,
+    )
+    result["plugins"]["opencode"]["summarize"]["provider"] = click.prompt(
+        "  OpenCode summarize provider",
+        default=current.plugins.opencode.summarize.provider,
+    )
+    result["plugins"]["opencode"]["summarize"]["model"] = click.prompt(
+        "  OpenCode summarize model",
+        default=current.plugins.opencode.summarize.model,
+    )
+    result["plugins"]["openclaw"]["summarize"]["enabled"] = click.confirm(
+        "  OpenClaw automatic summaries enabled",
+        default=current.plugins.openclaw.summarize.enabled,
+    )
+    result["plugins"]["openclaw"]["summarize"]["provider"] = click.prompt(
+        "  OpenClaw summarize provider",
+        default=current.plugins.openclaw.summarize.provider,
+    )
+    result["plugins"]["openclaw"]["summarize"]["model"] = click.prompt(
+        "  OpenClaw summarize model",
+        default=current.plugins.openclaw.summarize.model,
+    )
+
+    click.echo("\n── Advanced maintenance ──")
+    click.echo("  Disabled by default. Configure provider/model if you enable these tasks.")
+    for key, label, current_platform in [
+        ("claude-code", "Claude Code", current.plugins.claude_code),
+        ("codex", "Codex", current.plugins.codex),
+        ("opencode", "OpenCode", current.plugins.opencode),
+        ("openclaw", "OpenClaw", current.plugins.openclaw),
+    ]:
+        for task_name, task_label in [("project_review", "project review"), ("user_profile", "user profile")]:
+            task = getattr(current_platform, task_name)
+            section = result["plugins"][key][task_name]
+            section["enabled"] = click.confirm(f"  {label} {task_label} enabled", default=task.enabled)
+            section["provider"] = click.prompt(f"  {label} {task_label} provider", default=task.provider)
+            section["model"] = click.prompt(f"  {label} {task_label} model", default=task.model)
+            section["min_interval_hours"] = click.prompt(
+                f"  {label} {task_label} min interval hours",
+                default=task.min_interval_hours,
+                type=int,
+            )
+            section["input_dir"] = click.prompt(f"  {label} {task_label} input dir", default=task.input_dir)
+            section["output_file"] = click.prompt(f"  {label} {task_label} output file", default=task.output_file)
+
     # Prompts
     click.echo("\n── Prompts ──")
     click.echo("  Leave empty to use built-in defaults.")
@@ -810,6 +972,14 @@ def config_init(project: bool) -> None:
     result["prompts"]["summarize"] = click.prompt(
         "  Summarize prompt file (for plugin session notes)",
         default=current.prompts.summarize,
+    )
+    result["prompts"]["project_review"] = click.prompt(
+        "  Project review prompt file",
+        default=current.prompts.project_review,
+    )
+    result["prompts"]["user_profile"] = click.prompt(
+        "  User profile prompt file",
+        default=current.prompts.user_profile,
     )
 
     save_config(result, target)

@@ -26,7 +26,8 @@ GLOBAL_CONFIG_PATH = Path("~/.memsearch/config.toml").expanduser()
 PROJECT_CONFIG_PATH = Path(".memsearch.toml")
 
 # Fields that should be parsed as int when set via CLI strings
-_INT_FIELDS = {"max_chunk_size", "overlap_lines", "debounce_ms", "batch_size"}
+_INT_FIELDS = {"max_chunk_size", "overlap_lines", "debounce_ms", "batch_size", "min_interval_hours"}
+_BOOL_FIELDS = {"enabled"}
 
 
 @dataclass
@@ -72,17 +73,27 @@ class RerankerConfig:
 
 @dataclass
 class LLMConfig:
-    """LLM settings for plugin summarization and compact.
+    """LLM settings for memsearch-managed summarization jobs.
 
-    All fields default to empty.  When empty, plugin hooks fall back to
-    their own agent model; the ``compact`` CLI falls back to
+    All fields default to empty.  When empty, the ``compact`` CLI falls back to
     ``[compact].llm_provider`` (deprecated) or ``"openai"``.
     """
 
-    provider: str = ""  # empty = plugin decides; "openai"/"anthropic"/"gemini" for explicit
+    provider: str = ""  # empty = compact defaults to openai; "openai"/"anthropic"/"gemini" for explicit
     model: str = ""
     base_url: str = ""  # OpenAI-compatible endpoint URL
     api_key: str = ""  # API key (supports "env:VAR_NAME" syntax)
+    providers: dict[str, LLMProviderConfig] = field(default_factory=dict)
+
+
+@dataclass
+class LLMProviderConfig:
+    """Named LLM provider settings for plugin summarization routing."""
+
+    type: str = ""
+    model: str = ""
+    base_url: str = ""
+    api_key: str = ""  # supports "env:VAR_NAME" syntax
 
 
 @dataclass
@@ -94,6 +105,55 @@ class PromptsConfig:
 
     compact: str = ""  # custom prompt file for memsearch compact
     summarize: str = ""  # custom prompt file for plugin session summarization
+    project_review: str = ""  # custom prompt file for project maintenance
+    user_profile: str = ""  # custom prompt file for user profile maintenance
+
+
+@dataclass
+class PluginSummarizeConfig:
+    """Plugin summarization settings."""
+
+    enabled: bool = True
+    provider: str = ""  # empty/native = keep plugin-native summarization path
+    model: str = ""  # empty = keep plugin default/native model selection
+
+
+@dataclass
+class PluginMaintenanceTaskConfig:
+    """Advanced plugin maintenance task settings."""
+
+    enabled: bool = False
+    provider: str = "native"
+    model: str = ""
+    min_interval_hours: int = 24
+    input_dir: str = ".memsearch/memory"
+    output_file: str = ""
+
+
+@dataclass
+class PluginPlatformConfig:
+    """Settings for one platform plugin."""
+
+    summarize: PluginSummarizeConfig = field(default_factory=PluginSummarizeConfig)
+    project_review: PluginMaintenanceTaskConfig = field(
+        default_factory=lambda: PluginMaintenanceTaskConfig(output_file=".memsearch/PROJECT.md")
+    )
+    user_profile: PluginMaintenanceTaskConfig = field(
+        default_factory=lambda: PluginMaintenanceTaskConfig(output_file=".memsearch/USER.md")
+    )
+
+
+@dataclass
+class PluginsConfig:
+    """Platform plugin settings.
+
+    Python field names use underscores where TOML keys use hyphens.
+    """
+
+    claude_code: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
+    codex: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
+    opencode: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
+    openclaw: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
 
 
 @dataclass
@@ -106,6 +166,7 @@ class MemSearchConfig:
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
+    plugins: PluginsConfig = field(default_factory=PluginsConfig)
 
 
 # -- Section name → dataclass mapping for typed reconstruction --
@@ -118,6 +179,21 @@ _SECTION_CLASSES: dict[str, type] = {
     "reranker": RerankerConfig,
     "llm": LLMConfig,
     "prompts": PromptsConfig,
+    "plugins": PluginsConfig,
+}
+
+_PLUGIN_KEY_TO_FIELD = {
+    "claude-code": "claude_code",
+    "claude_code": "claude_code",
+    "codex": "codex",
+    "opencode": "opencode",
+    "openclaw": "openclaw",
+}
+_PLUGIN_FIELD_TO_KEY = {
+    "claude_code": "claude-code",
+    "codex": "codex",
+    "opencode": "opencode",
+    "openclaw": "openclaw",
 }
 
 
@@ -150,14 +226,21 @@ def resolve_env_ref(value: str) -> str:
     return env_val
 
 
-def _resolve_env_refs_in_dict(d: dict[str, Any]) -> dict[str, Any]:
+def _resolve_env_refs_in_dict(d: dict[str, Any], path: tuple[str, ...] = ()) -> dict[str, Any]:
     """Walk a nested config dict and resolve all ``env:`` references."""
     resolved = {}
     for key, val in d.items():
+        child_path = (*path, key)
         if isinstance(val, dict):
-            resolved[key] = _resolve_env_refs_in_dict(val)
+            resolved[key] = _resolve_env_refs_in_dict(val, child_path)
         elif isinstance(val, str) and val.startswith(_ENV_PREFIX):
-            resolved[key] = resolve_env_ref(val)
+            if len(child_path) == 4 and child_path[0] == "llm" and child_path[1] == "providers":
+                # Named LLM providers are selected lazily by plugin summarization.
+                # Keep env refs raw here so unused providers do not break unrelated
+                # config commands. The selected provider resolves env refs when used.
+                resolved[key] = val
+            else:
+                resolved[key] = resolve_env_ref(val)
         else:
             resolved[key] = val
     return resolved
@@ -165,7 +248,60 @@ def _resolve_env_refs_in_dict(d: dict[str, Any]) -> dict[str, Any]:
 
 def _default_dict() -> dict[str, Any]:
     """Return MemSearchConfig defaults as a nested dict."""
-    return asdict(MemSearchConfig())
+    return config_to_dict(MemSearchConfig())
+
+
+def _plugins_to_dict(cfg: PluginsConfig) -> dict[str, Any]:
+    """Convert plugin config to TOML-facing keys."""
+    data = asdict(cfg)
+    return {_PLUGIN_FIELD_TO_KEY[key]: value for key, value in data.items()}
+
+
+def _dict_to_plugins_config(section_data: dict[str, Any]) -> PluginsConfig:
+    """Convert a TOML plugins table to PluginsConfig."""
+    kwargs: dict[str, Any] = {}
+    valid_platform_fields = {f.name for f in fields(PluginPlatformConfig)}
+    task_classes = {
+        "summarize": PluginSummarizeConfig,
+        "project_review": PluginMaintenanceTaskConfig,
+        "user_profile": PluginMaintenanceTaskConfig,
+    }
+
+    for raw_platform, raw_platform_data in section_data.items():
+        platform = _PLUGIN_KEY_TO_FIELD.get(raw_platform)
+        if not platform or not isinstance(raw_platform_data, dict):
+            continue
+
+        platform_kwargs: dict[str, Any] = {}
+        for task_name, task_cls in task_classes.items():
+            task_data = raw_platform_data.get(task_name, {})
+            if isinstance(task_data, dict):
+                valid_task_fields = {f.name for f in fields(task_cls)}
+                task_filtered = {k: v for k, v in task_data.items() if k in valid_task_fields}
+                platform_kwargs[task_name] = task_cls(**task_filtered)
+
+        filtered = {k: v for k, v in raw_platform_data.items() if k in valid_platform_fields and k not in task_classes}
+        platform_kwargs.update(filtered)
+        kwargs[platform] = PluginPlatformConfig(**platform_kwargs)
+
+    return PluginsConfig(**kwargs)
+
+
+def _dict_to_llm_config(section_data: dict[str, Any]) -> LLMConfig:
+    """Convert a TOML llm table to LLMConfig, preserving named providers."""
+    valid = {f.name for f in fields(LLMConfig) if f.name != "providers"}
+    kwargs = {k: v for k, v in section_data.items() if k in valid}
+    provider_items = section_data.get("providers", {})
+    providers: dict[str, LLMProviderConfig] = {}
+    if isinstance(provider_items, dict):
+        valid_provider_fields = {f.name for f in fields(LLMProviderConfig)}
+        for name, raw_provider in provider_items.items():
+            if not isinstance(name, str) or not isinstance(raw_provider, dict):
+                continue
+            filtered = {k: v for k, v in raw_provider.items() if k in valid_provider_fields}
+            providers[name] = LLMProviderConfig(**filtered)
+    kwargs["providers"] = providers
+    return LLMConfig(**kwargs)
 
 
 def load_config_file(path: Path | str) -> dict[str, Any]:
@@ -200,6 +336,12 @@ def _dict_to_config(d: dict[str, Any]) -> MemSearchConfig:
     for section_name, cls in _SECTION_CLASSES.items():
         section_data = d.get(section_name, {})
         if not isinstance(section_data, dict):
+            continue
+        if section_name == "plugins":
+            kwargs[section_name] = _dict_to_plugins_config(section_data)
+            continue
+        if section_name == "llm":
+            kwargs[section_name] = _dict_to_llm_config(section_data)
             continue
         valid = {f.name for f in fields(cls)}
         filtered = {k: v for k, v in section_data.items() if k in valid}
@@ -259,7 +401,57 @@ def save_config(cfg_dict: dict[str, Any], path: Path | str) -> None:
 
 def config_to_dict(cfg: MemSearchConfig) -> dict[str, Any]:
     """Convert a MemSearchConfig to a nested dict (for saving)."""
-    return asdict(cfg)
+    data = asdict(cfg)
+    data["plugins"] = _plugins_to_dict(cfg.plugins)
+    return data
+
+
+def _validate_dotted_key(parts: list[str]) -> str:
+    """Validate a dotted config key and return its final field name."""
+    if len(parts) < 2:
+        raise ValueError(f"Key must be section.field (got {'.'.join(parts)!r})")
+
+    section = parts[0]
+    if section not in _SECTION_CLASSES:
+        raise KeyError(f"Unknown config section: {section}")
+
+    if section == "plugins":
+        if len(parts) != 4:
+            raise ValueError(f"Plugin config keys must be plugins.<platform>.<task>.<field> (got {'.'.join(parts)!r})")
+        platform, subsection, field_name = parts[1:]
+        if platform not in _PLUGIN_KEY_TO_FIELD:
+            raise KeyError(f"Unknown plugin platform: {platform}")
+        task_classes = {
+            "summarize": PluginSummarizeConfig,
+            "project_review": PluginMaintenanceTaskConfig,
+            "user_profile": PluginMaintenanceTaskConfig,
+        }
+        task_cls = task_classes.get(subsection)
+        if task_cls is None:
+            raise KeyError(f"Unknown plugin config section: {subsection} in platform {platform}")
+        valid = {f.name for f in fields(task_cls)}
+        if field_name not in valid:
+            raise KeyError(f"Unknown plugin {subsection} field: {field_name} in platform {platform}")
+        return field_name
+
+    if section == "llm" and len(parts) == 4 and parts[1] == "providers":
+        _, _, provider_name, field_name = parts
+        if not provider_name:
+            raise KeyError("LLM provider name must not be empty")
+        valid = {f.name for f in fields(LLMProviderConfig)}
+        if field_name not in valid:
+            raise KeyError(f"Unknown LLM provider field: {field_name}")
+        return field_name
+
+    if len(parts) != 2:
+        raise ValueError(f"Key must be section.field (got {'.'.join(parts)!r})")
+
+    field_name = parts[1]
+    cls = _SECTION_CLASSES[section]
+    valid = {f.name for f in fields(cls)}
+    if field_name not in valid:
+        raise KeyError(f"Unknown config field: {field_name} in section {section}")
+    return field_name
 
 
 def get_config_value(key: str, cfg: MemSearchConfig | None = None) -> Any:
@@ -269,7 +461,7 @@ def get_config_value(key: str, cfg: MemSearchConfig | None = None) -> Any:
     """
     if cfg is None:
         cfg = resolve_config()
-    d = asdict(cfg)
+    d = config_to_dict(cfg)
     parts = key.split(".")
     current: Any = d
     for part in parts:
@@ -296,21 +488,26 @@ def set_config_value(key: str, value: Any, *, project: bool = False) -> None:
     existing = load_config_file(path)
 
     parts = key.split(".")
-    if len(parts) != 2:
-        raise ValueError(f"Key must be section.field (got {key!r})")
-    section, field_name = parts
-
-    # Validate key
-    if section not in _SECTION_CLASSES:
-        raise KeyError(f"Unknown config section: {section}")
-    cls = _SECTION_CLASSES[section]
-    valid = {f.name for f in fields(cls)}
-    if field_name not in valid:
-        raise KeyError(f"Unknown config field: {field_name} in section {section}")
+    field_name = _validate_dotted_key(parts)
 
     # Auto-convert int fields
     if field_name in _INT_FIELDS and isinstance(value, str):
         value = int(value)
+    if field_name in _BOOL_FIELDS and isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            value = True
+        elif normalized in {"0", "false", "no", "off"}:
+            value = False
+        else:
+            raise ValueError(f"Boolean field {field_name!r} must be true or false")
 
-    existing.setdefault(section, {})[field_name] = value
+    current: dict[str, Any] = existing
+    for part in parts[:-1]:
+        next_value = current.setdefault(part, {})
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
     save_config(existing, path)

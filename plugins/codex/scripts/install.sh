@@ -27,7 +27,7 @@ path.write_text(text.replace(old, new))
 PY
 }
 
-ensure_codex_hooks_enabled() {
+ensure_hooks_enabled() {
   local config_file="$1"
 
   python3 - "$config_file" <<'PY'
@@ -37,19 +37,28 @@ import sys
 
 path = Path(sys.argv[1])
 if not path.exists():
-    path.write_text("[features]\ncodex_hooks = true\n")
+    path.write_text("[features]\nhooks = true\n")
     raise SystemExit
 
 text = path.read_text()
 
-if re.search(r"(?m)^codex_hooks\s*=", text):
-    text = re.sub(r"(?m)^codex_hooks\s*=.*$", "codex_hooks = true", text)
-elif re.search(r"(?m)^\[features\]\s*$", text):
-    text = re.sub(r"(?m)^\[features\]\s*$", "[features]\ncodex_hooks = true", text, count=1)
+features_match = re.search(r"(?m)^\[features\]\s*$", text)
+if features_match:
+    next_section = re.search(r"(?m)^\[[^]]+\]\s*$", text[features_match.end():])
+    block_end = len(text) if next_section is None else features_match.end() + next_section.start()
+    block = text[features_match.end():block_end]
+    block = re.sub(r"(?m)^codex_hooks\s*=.*\n?", "", block)
+    if re.search(r"(?m)^hooks\s*=", block):
+        block = re.sub(r"(?m)^hooks\s*=.*$", "hooks = true", block)
+    else:
+        if block and not block.startswith("\n"):
+            block = "\n" + block
+        block = "\nhooks = true" + block
+    text = text[:features_match.end()] + block + text[block_end:]
 else:
     if text and not text.endswith("\n"):
         text += "\n"
-    text += "\n[features]\ncodex_hooks = true\n"
+    text += "\n[features]\nhooks = true\n"
 
 path.write_text(text)
 PY
@@ -176,27 +185,32 @@ else
   uvx --from 'memsearch[onnx]' memsearch --version 2>/dev/null || true
 fi
 
-# --- 2. Install memory-recall skill ---
-echo "[2/6] Installing memory-recall skill..."
-SKILL_SRC="$INSTALL_DIR/skills/memory-recall"
-SKILL_DST="$HOME/.agents/skills/memory-recall"
+# --- 2. Install skills ---
+echo "[2/6] Installing memsearch skills..."
 mkdir -p "$HOME/.agents/skills"
 
-if [ -d "$SKILL_DST" ] || [ -L "$SKILL_DST" ]; then
-  echo "  ⚠ Existing memory-recall skill found — replacing"
-  rm -rf "$SKILL_DST"
-fi
+for skill_name in memory-recall memory-config; do
+  SKILL_SRC="$INSTALL_DIR/skills/$skill_name"
+  SKILL_DST="$HOME/.agents/skills/$skill_name"
+  if [ -d "$SKILL_DST" ] || [ -L "$SKILL_DST" ]; then
+    echo "  ⚠ Existing $skill_name skill found — replacing"
+    rm -rf "$SKILL_DST"
+  fi
 
-# Copy (not symlink) so we can substitute __INSTALL_DIR__ placeholder
-cp -r "$SKILL_SRC" "$SKILL_DST"
-echo "  ✓ Copied skill to $SKILL_DST"
+  # Copy (not symlink) so we can substitute __INSTALL_DIR__ placeholder
+  cp -r "$SKILL_SRC" "$SKILL_DST"
+  echo "  ✓ Copied $skill_name skill to $SKILL_DST"
+done
 
 # --- 3. Replace __INSTALL_DIR__ placeholder in SKILL.md ---
 echo "[3/6] Configuring skill paths..."
-if [ -f "$SKILL_DST/SKILL.md" ]; then
-  replace_text_in_file "$SKILL_DST/SKILL.md" "__INSTALL_DIR__" "$INSTALL_DIR"
-  echo "  ✓ Updated SKILL.md with install path: $INSTALL_DIR"
-fi
+for skill_name in memory-recall memory-config; do
+  SKILL_DST="$HOME/.agents/skills/$skill_name"
+  if [ -f "$SKILL_DST/SKILL.md" ]; then
+    replace_text_in_file "$SKILL_DST/SKILL.md" "__INSTALL_DIR__" "$INSTALL_DIR"
+    echo "  ✓ Updated $skill_name SKILL.md with install path: $INSTALL_DIR"
+  fi
+done
 
 # --- 4. Install or update hooks.json ---
 echo "[4/6] Configuring hooks..."
@@ -211,11 +225,11 @@ fi
 install_or_update_hooks_file "$HOOKS_FILE" "$INSTALL_DIR"
 echo "  ✓ Installed memsearch hooks in $HOOKS_FILE"
 
-# --- 5. Enable codex_hooks feature flag ---
-echo "[5/6] Enabling codex_hooks feature flag..."
+# --- 5. Enable hooks feature flag ---
+echo "[5/6] Enabling hooks feature flag..."
 CONFIG_FILE="$CODEX_DIR/config.toml"
-ensure_codex_hooks_enabled "$CONFIG_FILE"
-echo "  ✓ Ensured codex_hooks = true in $CONFIG_FILE"
+ensure_hooks_enabled "$CONFIG_FILE"
+echo "  ✓ Ensured hooks = true in $CONFIG_FILE"
 
 # --- 6. Make scripts executable ---
 echo "[6/6] Setting permissions..."
@@ -233,10 +247,11 @@ echo "  • SessionStart: indexes project memory, injects recent context"
 echo "  • Stop: summarizes each turn and saves to memory"
 echo "  • UserPromptSubmit: reminds Codex about memory-recall skill"
 echo "  • memory-recall skill: search past memories when relevant"
+echo "  • memory-config skill: diagnose and configure memsearch"
 echo ""
 echo "Memory files:   <project>/.memsearch/memory/*.md"
 echo "Hooks config:   $HOOKS_FILE"
-echo "Skill location: $SKILL_DST"
-echo "Feature flag:   codex_hooks = true in $CONFIG_FILE"
+echo "Skill location: $HOME/.agents/skills/{memory-recall,memory-config}"
+echo "Feature flag:   hooks = true in $CONFIG_FILE"
 echo ""
 echo "To verify: start a new codex session and check for [memsearch] status line."
