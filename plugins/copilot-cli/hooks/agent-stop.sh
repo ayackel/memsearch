@@ -89,14 +89,31 @@ fi
 # MUST come before -p — placing them after causes "too many arguments" errors.
 # MEMSEARCH_NO_WATCH=1 prevents child copilot from triggering hooks.
 SUMMARY=""
-if command -v copilot &>/dev/null; then
+SUMMARIZE_PROVIDER=""
+if [ -n "$MEMSEARCH_CMD" ]; then
+  SUMMARIZE_PROVIDER=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.provider 2>/dev/null || true)
+fi
+
+if [ -n "$SUMMARIZE_PROVIDER" ] && [ "$SUMMARIZE_PROVIDER" != "native" ] && [ -n "$MEMSEARCH_CMD" ]; then
+  SUMMARY=$(printf '%s' "$PARSED" | MEMSEARCH_NO_WATCH=1 $MEMSEARCH_CMD summarize \
+    --plugin copilot-cli \
+    --agent-name "$AGENT_NAME" \
+    2>/dev/null || true)
+elif command -v copilot &>/dev/null; then
+  SUMMARIZE_MODEL="claude-haiku-4.5"
+  if [ -n "$MEMSEARCH_CMD" ]; then
+    CONFIG_MODEL=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.model 2>/dev/null || true)
+    if [ -n "$CONFIG_MODEL" ]; then
+      SUMMARIZE_MODEL="$CONFIG_MODEL"
+    fi
+  fi
+  # Pass prompt as primary argument (not stdin + --system-prompt) for reliable handling.
   FULL_PROMPT="${SYSTEM_PROMPT}
 
----
 Transcript:
 ${PARSED}"
   SUMMARY=$(MEMSEARCH_NO_WATCH=1 copilot \
-    --model claude-haiku-4.5 \
+    --model "$SUMMARIZE_MODEL" \
     --allow-all-tools \
     -p "$FULL_PROMPT" \
     2>/dev/null || true)

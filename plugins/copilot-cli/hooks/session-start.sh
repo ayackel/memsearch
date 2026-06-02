@@ -149,10 +149,11 @@ fi
 
 # --- Fallback: recent file headings if search returned nothing ---
 if [ -z "$context" ]; then
-  recent_files=$(ls -1 "$MEMORY_DIR"/*.md 2>/dev/null | sort -r | head -2)
+  recent_files=$(find "$MEMORY_DIR" -maxdepth 1 -type f -name '*.md' -print 2>/dev/null | sort -r | head -2 || true)
   if [ -n "$recent_files" ]; then
     context="# Recent Memory\n\n"
     while IFS= read -r f; do
+      [ -z "$f" ] && continue
       basename_f=$(basename "$f")
       content=$(grep -E '^(#{2,4} |- )' "$f" 2>/dev/null | head -40 || true)
       if [ -n "$content" ]; then
