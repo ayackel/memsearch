@@ -19,7 +19,18 @@ class OnnxEmbedding:
     - Models with ``last_hidden_state`` output — CLS pooling + L2 normalize applied
     """
 
-    _DEFAULT_BATCH_SIZE = 32
+    # ONNX Runtime allocates attention matrices of size O(batch × seq_len²).
+    # With batch=32 and long sequences (500+ tokens), a single inference can
+    # consume 9+ GB of RAM via the BFC arena (which never shrinks), leading to
+    # OOM kills on memory-constrained systems like WSL.  batch=8 keeps peak
+    # memory under ~2.2 GB even with worst-case 768-token inputs.
+    _DEFAULT_BATCH_SIZE = 8
+
+    # bge-m3 supports 8192 tokens, but attention is O(n²) — long sequences
+    # with even small batches can exhaust memory.  memsearch chunks default to
+    # 1500 chars (~300-750 tokens), so 768 covers all practical inputs while
+    # preventing catastrophic memory growth from pathological content.
+    _DEFAULT_MAX_LENGTH = 768
 
     def __init__(
         self,
@@ -48,7 +59,7 @@ class OnnxEmbedding:
 
         self._tokenizer = Tokenizer.from_file(tok_path)
         self._tokenizer.enable_padding(pad_id=1, pad_token="<pad>")
-        self._tokenizer.enable_truncation(max_length=8192)
+        self._tokenizer.enable_truncation(max_length=self._DEFAULT_MAX_LENGTH)
 
         self._session = ort.InferenceSession(model_path)
         self._output_names = [o.name for o in self._session.get_outputs()]
