@@ -5,13 +5,19 @@
 set -euo pipefail
 
 # Read stdin JSON into $INPUT
-# Use timeout to prevent indefinite blocking in WSL 2 where stdin pipe may not close properly.
-# macOS lacks `timeout` — use perl alarm(2) as a portable fallback with a 2-second deadline.
-if command -v timeout &>/dev/null; then
+# Copilot CLI pipes hook input as JSON on stdin, but stdin may not close properly
+# (especially on WSL 2), causing indefinite blocking. Use a short timeout with
+# fallback to empty JSON. The read-based approach avoids subshell hangs.
+if [ -t 0 ]; then
+  # stdin is a terminal (not piped) — no hook input available
+  INPUT='{}'
+elif command -v timeout &>/dev/null; then
   INPUT="$(timeout 2 cat 2>/dev/null || echo '{}')"
 else
   INPUT="$(perl -e 'alarm 2; local $/; $_ = <STDIN>; print if defined' 2>/dev/null || echo '{}')"
 fi
+# Ensure INPUT is valid (non-empty)
+INPUT="${INPUT:-'{}'}"
 
 # Ensure common user bin paths are in PATH (hooks may run in a minimal env)
 for p in "$HOME/.local/bin" "$HOME/.cargo/bin" "$HOME/bin" "/usr/local/bin"; do
