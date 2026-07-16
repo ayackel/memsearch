@@ -127,6 +127,21 @@ ${PARSED}"
     SUMMARY="$PARSED"
   fi
 
+  # Strip any interactive interruption banner ("● Operation cancelled by user")
+  # that leaks into stdout when a signalled copilot subprocess is aborted, then
+  # drop the dangling bullet glyph the cut leaves behind.
+  SUMMARY=${SUMMARY%%Operation cancelled by user*}
+  SUMMARY=$(printf '%s' "$SUMMARY" | sed 's/●[[:space:]]*$//')
+
+  # Update checkpoint regardless so a cancelled turn is not re-processed.
+  mkdir -p "$(dirname "$CHECKPOINT_FILE")"
+  echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
+
+  # Nothing meaningful left (e.g. a cancelled turn) — don't write an empty entry.
+  if [ -z "$(printf '%s' "$SUMMARY" | tr -d '[:space:]-')" ]; then
+    return 0
+  fi
+
   # Append to daily memory file with session anchor
   {
     echo "### $NOW"
@@ -137,10 +152,6 @@ ${PARSED}"
     echo ""
   } >> "$MEMORY_FILE"
 
-  # Update checkpoint
-  mkdir -p "$(dirname "$CHECKPOINT_FILE")"
-  echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
-
   # Re-index
   run_memsearch index "$MEMORY_DIR"
 }
@@ -150,6 +161,14 @@ export MEMSEARCH_CMD MEMSEARCH_NO_WATCH=1 MEMORY_DIR SESSION_ID
 export TRANSCRIPT_PATH CHECKPOINT_FILE CURRENT_LINE_COUNT PARSED
 export COLLECTION_NAME COLLECTION_DESC SCRIPT_DIR
 
-# Run in background with 30s hard timeout, fully detached from parent
-(timeout 30 bash -c "$(declare -f _do_summarize _json_val _json_encode_str run_memsearch ensure_memory_dir kill_orphaned_index); _do_summarize") </dev/null &>/dev/null &
+# Run in background with 30s hard timeout, fully detached from parent.
+# setsid puts the summarizer in its own session with no controlling terminal, so
+# a Ctrl-C in the interactive session cannot deliver SIGINT to the nested
+# `copilot -p` call (which would otherwise leak its "Operation cancelled by user"
+# banner into the summary). Fall back to plain background if setsid is missing.
+if command -v setsid &>/dev/null; then
+  setsid timeout 30 bash -c "$(declare -f _do_summarize _json_val _json_encode_str run_memsearch ensure_memory_dir kill_orphaned_index); _do_summarize" </dev/null &>/dev/null &
+else
+  (timeout 30 bash -c "$(declare -f _do_summarize _json_val _json_encode_str run_memsearch ensure_memory_dir kill_orphaned_index); _do_summarize") </dev/null &>/dev/null &
+fi
 disown
