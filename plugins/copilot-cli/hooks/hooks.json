@@ -4,28 +4,28 @@
     "sessionStart": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/session-start.sh\"",
-        "timeoutSec": 30
+        "bash": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+        "timeoutSec": 10
       }
     ],
     "agentStop": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/agent-stop.sh\"",
-        "timeoutSec": 15
+        "bash": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/agent-stop.sh\"",
+        "timeoutSec": 5
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/session-end.sh\"",
+        "bash": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-end.sh\"",
         "timeoutSec": 10
       }
     ],
     "userPromptSubmit": [
       {
         "type": "command",
-        "bash": "bash \"${MEMSEARCH_PLUGIN_DIR:-$HOME/.copilot/installed-plugins/local/memsearch}/hooks/user-prompt-submit.sh\"",
+        "bash": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh\"",
         "timeoutSec": 5
       }
     ]

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import IO, Any, ClassVar
 
 logger = logging.getLogger(__name__)
+_LOCAL_LOCKS_GUARD = threading.Lock()
+_LOCAL_LOCKS: dict[str, tuple[IO[str], int]] = {}
 
 
 def _escape_filter_value(value: str) -> str:
@@ -23,6 +28,7 @@ class MilvusStore:
     """
 
     DEFAULT_COLLECTION = "memsearch_chunks"
+    LOCAL_LOCK_TIMEOUT_SECONDS = 60
 
     def __init__(
         self,
@@ -46,14 +52,17 @@ class MilvusStore:
                 "https://learn.microsoft.com/en-us/windows/wsl/install"
             )
         resolved = str(Path(uri).expanduser()) if is_local else uri
+        self._lock_path: str | None = None
         if is_local:
             Path(resolved).parent.mkdir(parents=True, exist_ok=True)
+            self._acquire_local_lock(resolved)
         connect_kwargs: dict[str, Any] = {"uri": resolved}
         if token:
             connect_kwargs["token"] = token
         try:
             self._client = MilvusClient(**connect_kwargs)
         except Exception as exc:
+            self._release_local_lock()
             if is_local:
                 raise RuntimeError(
                     "Failed to open the local Milvus Lite database. If this database was created "
@@ -68,7 +77,70 @@ class MilvusStore:
         self._collection = collection
         self._dimension = dimension
         self._description = description
-        self._ensure_collection()
+        try:
+            self._ensure_collection()
+        except Exception:
+            try:
+                self._client.close()
+            finally:
+                self._release_local_lock()
+            raise
+
+    def _acquire_local_lock(self, resolved_uri: str) -> None:
+        """Serialize Milvus Lite clients across processes.
+
+        Milvus Lite permits only one process to open a database file. Holding
+        this advisory lock for the client lifetime makes concurrent CLI
+        commands wait instead of failing with a misleading database error.
+        """
+        import fcntl
+
+        lock_path = f"{resolved_uri}.lock"
+        with _LOCAL_LOCKS_GUARD:
+            existing = _LOCAL_LOCKS.get(lock_path)
+            if existing is not None:
+                lock_file, count = existing
+                _LOCAL_LOCKS[lock_path] = (lock_file, count + 1)
+                self._lock_path = lock_path
+                return
+
+            lock_file = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115 - held for client lifetime
+            deadline = time.monotonic() + self.LOCAL_LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        lock_file.close()
+                        raise TimeoutError(
+                            "Timed out waiting for another memsearch process to release "
+                            f"the local Milvus database: {resolved_uri}"
+                        ) from None
+                    time.sleep(0.1)
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(str(os.getpid()))
+            lock_file.flush()
+            _LOCAL_LOCKS[lock_path] = (lock_file, 1)
+            self._lock_path = lock_path
+
+    def _release_local_lock(self) -> None:
+        if self._lock_path is None:
+            return
+        import fcntl
+
+        with _LOCAL_LOCKS_GUARD:
+            lock_file, count = _LOCAL_LOCKS[self._lock_path]
+            if count > 1:
+                _LOCAL_LOCKS[self._lock_path] = (lock_file, count - 1)
+            else:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
+                    del _LOCAL_LOCKS[self._lock_path]
+            self._lock_path = None
 
     def _ensure_collection(self) -> None:
         if self._client.has_collection(self._collection):
@@ -275,17 +347,20 @@ class MilvusStore:
             self._client.drop_collection(self._collection)
 
     def close(self) -> None:
-        self._client.close()
-        # Milvus Lite: release the server process to free the db file lock.
-        # Without this, the milvus_lite subprocess outlives the parent and
-        # blocks subsequent CLI invocations from opening the same .db file.
-        if self._is_lite:
-            try:
-                from milvus_lite.server_manager import server_manager_instance
+        try:
+            self._client.close()
+            # Milvus Lite: release the server process to free the db file lock.
+            # Without this, the milvus_lite subprocess outlives the parent and
+            # blocks subsequent CLI invocations from opening the same .db file.
+            if self._is_lite:
+                try:
+                    from milvus_lite.server_manager import server_manager_instance
 
-                server_manager_instance.release_server(self._resolved_uri)
-            except Exception:
-                pass
+                    server_manager_instance.release_server(self._resolved_uri)
+                except Exception:
+                    pass
+        finally:
+            self._release_local_lock()
 
     def __enter__(self) -> MilvusStore:
         return self

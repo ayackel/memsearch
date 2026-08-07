@@ -8,7 +8,9 @@ set -euo pipefail
 # Copilot CLI pipes hook input as JSON on stdin, but stdin may not close properly
 # (especially on WSL 2), causing indefinite blocking. Use a short timeout with
 # fallback to empty JSON. The read-based approach avoids subshell hangs.
-if [ -t 0 ]; then
+if [ -n "${MEMSEARCH_HOOK_INPUT:-}" ]; then
+  INPUT="$MEMSEARCH_HOOK_INPUT"
+elif [ -t 0 ]; then
   # stdin is a terminal (not piped) — no hook input available
   INPUT='{}'
 elif command -v timeout &>/dev/null; then
@@ -113,6 +115,10 @@ _detect_memsearch() {
 }
 _detect_memsearch
 
+hook_is_internal() {
+  [ "${MEMSEARCH_NO_WATCH:-}" = "1" ] || [ "${MEMSEARCH_IN_SUMMARY_WORKER:-}" = "1" ]
+}
+
 # Short command prefix for injected instructions (falls back to "memsearch" even if unavailable)
 MEMSEARCH_CMD_PREFIX="${MEMSEARCH_CMD:-memsearch}"
 
@@ -128,12 +134,79 @@ fi
 # Collection description (set by session-start.sh, empty by default)
 COLLECTION_DESC=""
 
+# Read the small subset of layered config needed by latency-sensitive hooks
+# without spawning the full memsearch CLI once per key.
+load_hook_settings() {
+  python3 - "$HOME/.memsearch/config.toml" "$_PROJECT_DIR/.memsearch.toml" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    print("{}")
+    raise SystemExit(0)
+
+
+def load(path):
+    try:
+        with Path(path).open("rb") as handle:
+            return tomllib.load(handle)
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def merge(base, override):
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+cfg = merge(load(sys.argv[1]), load(sys.argv[2]))
+embedding = cfg.get("embedding", {})
+milvus = cfg.get("milvus", {})
+copilot = cfg.get("plugins", {}).get("copilot-cli", {})
+recall = copilot.get("recall", {})
+hint = copilot.get("prompt_hint", {})
+print(
+    json.dumps(
+        {
+            "provider": embedding.get("provider", "onnx"),
+            "model": embedding.get("model", ""),
+            "embedding_api_key": embedding.get("api_key", ""),
+            "milvus_uri": milvus.get("uri", "~/.memsearch/milvus.db"),
+            "recall_enabled": recall.get("enabled", False),
+            "recall_top_k": recall.get("top_k", 5),
+            "recall_min_prompt_chars": recall.get("min_prompt_chars", 20),
+            "hint_enabled": hint.get("enabled", False),
+            "hint_min_prompt_chars": hint.get("min_prompt_chars", 20),
+        }
+    )
+)
+PY
+}
+
 # Helper: run memsearch with arguments, silently fail if not available
 run_memsearch() {
   if [ -n "$MEMSEARCH_CMD" ] && [ -n "$COLLECTION_NAME" ]; then
     $MEMSEARCH_CMD "$@" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
   elif [ -n "$MEMSEARCH_CMD" ]; then
     $MEMSEARCH_CMD "$@" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null || true
+  fi
+}
+
+run_memsearch_checked() {
+  if [ -n "$MEMSEARCH_CMD" ] && [ -n "$COLLECTION_NAME" ]; then
+    $MEMSEARCH_CMD "$@" --collection "$COLLECTION_NAME" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null
+  elif [ -n "$MEMSEARCH_CMD" ]; then
+    $MEMSEARCH_CMD "$@" ${COLLECTION_DESC:+--description "$COLLECTION_DESC"} 2>/dev/null
+  else
+    return 127
   fi
 }
 

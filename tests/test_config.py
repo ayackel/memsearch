@@ -36,6 +36,10 @@ def test_default_config():
     assert cfg.plugins.claude_code.summarize.provider == ""
     assert cfg.plugins.claude_code.summarize.enabled is True
     assert cfg.plugins.claude_code.summarize.model == ""
+    assert cfg.plugins.copilot_cli.summarize.provider == ""
+    assert cfg.plugins.copilot_cli.recall.enabled is False
+    assert cfg.plugins.copilot_cli.recall.top_k == 5
+    assert cfg.plugins.copilot_cli.prompt_hint.enabled is False
     assert cfg.plugins.codex.summarize.model == ""
     assert cfg.plugins.codex.project_review.enabled is False
     assert cfg.plugins.codex.project_review.min_interval_hours == 24
@@ -145,12 +149,14 @@ def test_plugin_summarize_model_config_roundtrip(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
 
     set_config_value("plugins.claude-code.summarize.model", "claude-haiku-4-5")
+    set_config_value("plugins.copilot-cli.summarize.model", "claude-haiku-4.5")
     set_config_value("plugins.codex.summarize.model", "gpt-5.1-codex-mini")
     set_config_value("plugins.opencode.summarize.model", "anthropic/claude-haiku")
     set_config_value("plugins.openclaw.summarize.model", "qwen3-coder")
 
     cfg = resolve_config()
     assert cfg.plugins.claude_code.summarize.model == "claude-haiku-4-5"
+    assert cfg.plugins.copilot_cli.summarize.model == "claude-haiku-4.5"
     assert cfg.plugins.codex.summarize.model == "gpt-5.1-codex-mini"
     assert cfg.plugins.opencode.summarize.model == "anthropic/claude-haiku"
     assert cfg.plugins.openclaw.summarize.model == "qwen3-coder"
@@ -167,10 +173,12 @@ def test_plugin_summarize_provider_config_roundtrip(tmp_path: Path, monkeypatch:
     monkeypatch.setattr("memsearch.config.PROJECT_CONFIG_PATH", tmp_path / "nope.toml")
 
     set_config_value("plugins.codex.summarize.provider", "openai")
+    set_config_value("plugins.copilot-cli.summarize.provider", "extract")
     set_config_value("plugins.opencode.summarize.provider", "native")
 
     cfg = resolve_config()
     assert cfg.plugins.codex.summarize.provider == "openai"
+    assert cfg.plugins.copilot_cli.summarize.provider == "extract"
     assert cfg.plugins.opencode.summarize.provider == "native"
     assert get_config_value("plugins.codex.summarize.provider", cfg) == "openai"
 
@@ -420,6 +428,7 @@ def test_plugins_config_defaults():
     """PluginsConfig should expose the supported platform summarize model keys."""
     cfg = PluginsConfig()
     assert cfg.claude_code.summarize.model == ""
+    assert cfg.copilot_cli.summarize.model == ""
     assert cfg.codex.summarize.model == ""
     assert cfg.opencode.summarize.model == ""
     assert cfg.openclaw.summarize.model == ""

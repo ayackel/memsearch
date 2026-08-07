@@ -26,7 +26,15 @@ GLOBAL_CONFIG_PATH = Path("~/.memsearch/config.toml").expanduser()
 PROJECT_CONFIG_PATH = Path(".memsearch.toml")
 
 # Fields that should be parsed as int when set via CLI strings
-_INT_FIELDS = {"max_chunk_size", "overlap_lines", "debounce_ms", "batch_size", "min_interval_hours"}
+_INT_FIELDS = {
+    "max_chunk_size",
+    "overlap_lines",
+    "debounce_ms",
+    "batch_size",
+    "min_interval_hours",
+    "top_k",
+    "min_prompt_chars",
+}
 _BOOL_FIELDS = {"enabled"}
 
 
@@ -114,8 +122,25 @@ class PluginSummarizeConfig:
     """Plugin summarization settings."""
 
     enabled: bool = True
-    provider: str = ""  # empty/native = keep plugin-native summarization path
+    provider: str = ""  # empty = platform default; "native" = platform LLM
     model: str = ""  # empty = keep plugin default/native model selection
+
+
+@dataclass
+class PluginRecallConfig:
+    """Automatic recall settings for platform session-start hooks."""
+
+    enabled: bool = False
+    top_k: int = 5
+    min_prompt_chars: int = 20
+
+
+@dataclass
+class PluginPromptHintConfig:
+    """Prompt-time memory skill hint settings."""
+
+    enabled: bool = False
+    min_prompt_chars: int = 20
 
 
 @dataclass
@@ -135,6 +160,8 @@ class PluginPlatformConfig:
     """Settings for one platform plugin."""
 
     summarize: PluginSummarizeConfig = field(default_factory=PluginSummarizeConfig)
+    recall: PluginRecallConfig = field(default_factory=PluginRecallConfig)
+    prompt_hint: PluginPromptHintConfig = field(default_factory=PluginPromptHintConfig)
     project_review: PluginMaintenanceTaskConfig = field(
         default_factory=lambda: PluginMaintenanceTaskConfig(output_file=".memsearch/PROJECT.md")
     )
@@ -151,6 +178,7 @@ class PluginsConfig:
     """
 
     claude_code: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
+    copilot_cli: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
     codex: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
     opencode: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
     openclaw: PluginPlatformConfig = field(default_factory=PluginPlatformConfig)
@@ -185,12 +213,15 @@ _SECTION_CLASSES: dict[str, type] = {
 _PLUGIN_KEY_TO_FIELD = {
     "claude-code": "claude_code",
     "claude_code": "claude_code",
+    "copilot-cli": "copilot_cli",
+    "copilot_cli": "copilot_cli",
     "codex": "codex",
     "opencode": "opencode",
     "openclaw": "openclaw",
 }
 _PLUGIN_FIELD_TO_KEY = {
     "claude_code": "claude-code",
+    "copilot_cli": "copilot-cli",
     "codex": "codex",
     "opencode": "opencode",
     "openclaw": "openclaw",
@@ -263,6 +294,8 @@ def _dict_to_plugins_config(section_data: dict[str, Any]) -> PluginsConfig:
     valid_platform_fields = {f.name for f in fields(PluginPlatformConfig)}
     task_classes = {
         "summarize": PluginSummarizeConfig,
+        "recall": PluginRecallConfig,
+        "prompt_hint": PluginPromptHintConfig,
         "project_review": PluginMaintenanceTaskConfig,
         "user_profile": PluginMaintenanceTaskConfig,
     }
@@ -423,6 +456,8 @@ def _validate_dotted_key(parts: list[str]) -> str:
             raise KeyError(f"Unknown plugin platform: {platform}")
         task_classes = {
             "summarize": PluginSummarizeConfig,
+            "recall": PluginRecallConfig,
+            "prompt_hint": PluginPromptHintConfig,
             "project_review": PluginMaintenanceTaskConfig,
             "user_profile": PluginMaintenanceTaskConfig,
         }

@@ -1,174 +1,181 @@
 #!/usr/bin/env bash
-# agentStop hook: parse last turn, summarize, append to daily memory.
-# CRITICAL: This hook MUST return {} immediately and do all work in background.
-# Blocking here causes session termination to hang (zombie processes accumulate).
+# agentStop hook: detach immediately, capture the last turn, and index it.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
-# Emit response immediately — never block session termination.
-echo '{}'
-
-# Skip if memsearch unavailable
-if [ -z "$MEMSEARCH_CMD" ]; then
-  exit 0
-fi
-
-# Skip if embedding provider needs an API key we don't have
 _required_env_var() {
   case "$1" in
-    openai) echo "OPENAI_API_KEY" ;; google) echo "GOOGLE_API_KEY" ;;
-    voyage) echo "VOYAGE_API_KEY" ;; jina) echo "JINA_API_KEY" ;;
-    mistral) echo "MISTRAL_API_KEY" ;; *) echo "" ;;
+    openai) echo "OPENAI_API_KEY" ;;
+    google) echo "GOOGLE_API_KEY" ;;
+    voyage) echo "VOYAGE_API_KEY" ;;
+    jina) echo "JINA_API_KEY" ;;
+    mistral) echo "MISTRAL_API_KEY" ;;
+    *) echo "" ;;
   esac
 }
-_PROVIDER=$($MEMSEARCH_CMD config get embedding.provider 2>/dev/null || echo "onnx")
-_REQ_KEY=$(_required_env_var "$_PROVIDER")
-if [ -n "$_REQ_KEY" ] && [ -z "${!_REQ_KEY:-}" ]; then
-  _CONFIG_API_KEY=$($MEMSEARCH_CMD config get embedding.api_key 2>/dev/null || echo "")
-  if [ -z "$_CONFIG_API_KEY" ]; then
-    exit 0
-  fi
-fi
 
-# Get transcript path — from hook input, fallback to session state dir
-TRANSCRIPT_PATH=$(_json_val "$INPUT" "transcriptPath" "")
-if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
-  TRANSCRIPT_PATH="$SESSION_STATE_DIR/events.jsonl"
-fi
+_record_failure() {
+  local reason="$1" provider="${2:-unknown}"
+  local error_file="$SESSION_STATE_DIR/.memsearch_summary_error"
+  mkdir -p "$SESSION_STATE_DIR"
+  printf '%s line_count=%s provider=%s reason=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${CURRENT_LINE_COUNT:-unknown}" "$provider" "$reason" > "$error_file"
+}
 
-if [ ! -f "$TRANSCRIPT_PATH" ]; then
-  exit 0
-fi
-
-LINE_COUNT=$(wc -l < "$TRANSCRIPT_PATH" 2>/dev/null || echo "0")
-if [ "$LINE_COUNT" -lt 3 ]; then
-  exit 0
-fi
-
-# Check checkpoint — skip if we already summarized this turn
-LAST_LINE_COUNT=""
-if [ -f "$CHECKPOINT_FILE" ]; then
-  LAST_LINE_COUNT=$(cat "$CHECKPOINT_FILE" 2>/dev/null || true)
-fi
-CURRENT_LINE_COUNT="$LINE_COUNT"
-if [ "$LAST_LINE_COUNT" = "$CURRENT_LINE_COUNT" ]; then
-  exit 0
-fi
-
-ensure_memory_dir
-
-# Parse transcript — extract the last turn
-PARSED=$("$SCRIPT_DIR/parse-transcript.sh" "$TRANSCRIPT_PATH" 2>/dev/null || true)
-
-if [ -z "$PARSED" ] || [ "$PARSED" = "(empty transcript)" ] || [ "$PARSED" = "(no user message found)" ] || [ "$PARSED" = "(empty turn)" ]; then
-  exit 0
-fi
-
-# --- All validation passed. Fork summarization into background with a timeout. ---
-# Use setsid to fully detach so the hook process can exit immediately.
-# The 30s timeout kills the summarization if it hangs (copilot -p, network, etc.)
-
-_do_summarize() {
-  local TODAY NOW MEMORY_FILE AGENT_NAME PROMPT_FILE SYSTEM_PROMPT
-  local SUMMARY SUMMARIZE_PROVIDER SUMMARIZE_MODEL CONFIG_MODEL FULL_PROMPT
-
-  TODAY=$(date +%Y-%m-%d)
-  NOW=$(date +%H:%M)
-  MEMORY_FILE="$MEMORY_DIR/$TODAY.md"
-
-  # Load summarization prompt
-  AGENT_NAME="Copilot CLI"
-  PROMPT_FILE=""
-  if [ -n "$MEMSEARCH_CMD" ]; then
-    PROMPT_FILE=$($MEMSEARCH_CMD config get prompts.summarize 2>/dev/null || true)
-  fi
-  if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
-    SYSTEM_PROMPT=$(sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$PROMPT_FILE")
-  elif [ -f "$SCRIPT_DIR/../prompts/summarize.txt" ]; then
-    SYSTEM_PROMPT=$(sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$SCRIPT_DIR/../prompts/summarize.txt")
-  else
-    SYSTEM_PROMPT="You are a third-person note-taker. Summarize the transcript as 2-6 bullet points. Write in third person. Output ONLY bullet points."
-  fi
-
-  # Summarize with copilot -p (non-interactive mode)
-  SUMMARY=""
-  SUMMARIZE_PROVIDER=""
-  if [ -n "$MEMSEARCH_CMD" ]; then
-    SUMMARIZE_PROVIDER=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.provider 2>/dev/null || true)
-  fi
-
-  if [ -n "$SUMMARIZE_PROVIDER" ] && [ "$SUMMARIZE_PROVIDER" != "native" ] && [ -n "$MEMSEARCH_CMD" ]; then
-    SUMMARY=$(printf '%s' "$PARSED" | MEMSEARCH_NO_WATCH=1 $MEMSEARCH_CMD summarize \
-      --plugin copilot-cli \
-      --agent-name "$AGENT_NAME" \
-      2>/dev/null || true)
-  elif command -v copilot &>/dev/null; then
-    SUMMARIZE_MODEL="claude-haiku-4.5"
-    if [ -n "$MEMSEARCH_CMD" ]; then
-      CONFIG_MODEL=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.model 2>/dev/null || true)
-      if [ -n "$CONFIG_MODEL" ]; then
-        SUMMARIZE_MODEL="$CONFIG_MODEL"
-      fi
-    fi
-    FULL_PROMPT="${SYSTEM_PROMPT}
-
-Transcript:
-${PARSED}"
-    # 25s timeout for the copilot call itself (leaves 5s margin within the 30s outer timeout)
-    SUMMARY=$(timeout 25 env MEMSEARCH_NO_WATCH=1 copilot \
-      --model "$SUMMARIZE_MODEL" \
-      -p "$FULL_PROMPT" \
-      </dev/null 2>/dev/null || true)
-  fi
-
-  # Fallback to raw transcript if summarization failed/timed out
-  if [ -z "$SUMMARY" ]; then
-    SUMMARY="$PARSED"
-  fi
-
-  # Strip any interactive interruption banner ("● Operation cancelled by user")
-  # that leaks into stdout when a signalled copilot subprocess is aborted, then
-  # drop the dangling bullet glyph the cut leaves behind.
-  SUMMARY=${SUMMARY%%Operation cancelled by user*}
-  SUMMARY=$(printf '%s' "$SUMMARY" | sed 's/●[[:space:]]*$//')
-
-  # Update checkpoint regardless so a cancelled turn is not re-processed.
-  mkdir -p "$(dirname "$CHECKPOINT_FILE")"
-  echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
-
-  # Nothing meaningful left (e.g. a cancelled turn) — don't write an empty entry.
-  if [ -z "$(printf '%s' "$SUMMARY" | tr -d '[:space:]-')" ]; then
+_run_worker() {
+  if [ -z "$MEMSEARCH_CMD" ]; then
     return 0
   fi
 
-  # Append to daily memory file with session anchor
-  {
-    echo "### $NOW"
-    if [ -n "$SESSION_ID" ]; then
-      echo "<!-- session:${SESSION_ID} transcript:${TRANSCRIPT_PATH} -->"
-    fi
-    echo "$SUMMARY"
-    echo ""
-  } >> "$MEMORY_FILE"
+  local summarize_enabled
+  summarize_enabled=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.enabled 2>/dev/null || echo "true")
+  if [ "$summarize_enabled" = "false" ]; then
+    return 0
+  fi
 
-  # Re-index
-  run_memsearch index "$MEMORY_DIR"
+  local provider required_key config_api_key
+  provider=$($MEMSEARCH_CMD config get embedding.provider 2>/dev/null || echo "onnx")
+  required_key=$(_required_env_var "$provider")
+  if [ -n "$required_key" ] && [ -z "${!required_key:-}" ]; then
+    config_api_key=$($MEMSEARCH_CMD config get embedding.api_key 2>/dev/null || echo "")
+    if [ -z "$config_api_key" ]; then
+      return 0
+    fi
+  fi
+
+  local transcript_path
+  transcript_path=$(_json_val "$INPUT" "transcriptPath" "")
+  if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
+    transcript_path="$SESSION_STATE_DIR/events.jsonl"
+  fi
+  if [ ! -f "$transcript_path" ]; then
+    return 0
+  fi
+
+  local line_count last_line_count=""
+  line_count=$(wc -l < "$transcript_path" 2>/dev/null || echo "0")
+  if [ "$line_count" -lt 3 ]; then
+    return 0
+  fi
+  CURRENT_LINE_COUNT="$line_count"
+
+  if [ -f "$CHECKPOINT_FILE" ]; then
+    last_line_count=$(cat "$CHECKPOINT_FILE" 2>/dev/null || true)
+  fi
+  if [ "$last_line_count" = "$CURRENT_LINE_COUNT" ]; then
+    return 0
+  fi
+
+  local summarize_provider summary="" parsed=""
+  summarize_provider=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.provider 2>/dev/null || echo "extract")
+  [ -z "$summarize_provider" ] && summarize_provider="extract"
+
+  if [ "$summarize_provider" = "extract" ]; then
+    summary=$(python3 "$SCRIPT_DIR/extract-memory.py" "$transcript_path" 2>/dev/null || true)
+  else
+    parsed=$("$SCRIPT_DIR/parse-transcript.sh" "$transcript_path" 2>/dev/null || true)
+    if [ -z "$parsed" ] || [ "$parsed" = "(empty transcript)" ] \
+      || [ "$parsed" = "(no user message found)" ] || [ "$parsed" = "(empty turn)" ]; then
+      _record_failure "empty-transcript" "$summarize_provider"
+      return 0
+    fi
+
+    if [ "$summarize_provider" != "native" ]; then
+      summary=$(printf '%s' "$parsed" | MEMSEARCH_NO_WATCH=1 $MEMSEARCH_CMD summarize \
+        --plugin copilot-cli \
+        --agent-name "Copilot CLI" \
+        2>/dev/null || true)
+    elif command -v copilot &>/dev/null; then
+      local prompt_file system_prompt summarize_model config_model full_prompt
+      prompt_file=$($MEMSEARCH_CMD config get prompts.summarize 2>/dev/null || true)
+      if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        system_prompt=$(sed "s/{{AGENT_NAME}}/Copilot CLI/g" "$prompt_file")
+      elif [ -f "$SCRIPT_DIR/../prompts/summarize.txt" ]; then
+        system_prompt=$(sed "s/{{AGENT_NAME}}/Copilot CLI/g" "$SCRIPT_DIR/../prompts/summarize.txt")
+      else
+        system_prompt="You are a third-person note-taker. Summarize the transcript as 2-6 bullet points. Output only bullet points."
+      fi
+      summarize_model="claude-haiku-4.5"
+      config_model=$($MEMSEARCH_CMD config get plugins.copilot-cli.summarize.model 2>/dev/null || true)
+      [ -n "$config_model" ] && summarize_model="$config_model"
+      full_prompt="${system_prompt}
+
+Transcript:
+${parsed}"
+      summary=$(timeout 25 env MEMSEARCH_NO_WATCH=1 MEMSEARCH_IN_SUMMARY_WORKER=1 copilot \
+        --model "$summarize_model" \
+        -p "$full_prompt" \
+        </dev/null 2>/dev/null || true)
+    fi
+  fi
+
+  summary=${summary%%Operation cancelled by user*}
+  summary=$(printf '%s' "$summary" | sed 's/●[[:space:]]*$//')
+  if [ -z "$(printf '%s' "$summary" | tr -d '[:space:]-')" ]; then
+    _record_failure "empty-summary" "$summarize_provider"
+    mkdir -p "$(dirname "$CHECKPOINT_FILE")"
+    echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
+    return 0
+  fi
+
+  ensure_memory_dir
+  local today now memory_file
+  today=$(date +%Y-%m-%d)
+  now=$(date +%H:%M)
+  memory_file="$MEMORY_DIR/$today.md"
+
+  if command -v flock &>/dev/null; then
+    exec 9>"$MEMORY_DIR/.memory-write.lock"
+    if ! flock -w 30 9; then
+      _record_failure "write-lock-timeout" "$summarize_provider"
+      return 0
+    fi
+  fi
+
+  {
+    echo "## Session $now"
+    if [ -n "$SESSION_ID" ]; then
+      echo "<!-- session:${SESSION_ID} transcript:${transcript_path} -->"
+    fi
+    echo "$summary"
+    echo ""
+  } >> "$memory_file"
+
+  mkdir -p "$(dirname "$CHECKPOINT_FILE")"
+  echo "$CURRENT_LINE_COUNT" > "$CHECKPOINT_FILE"
+
+  if run_memsearch_checked index "$MEMORY_DIR"; then
+    rm -f "$SESSION_STATE_DIR/.memsearch_summary_error"
+  else
+    _record_failure "index-failed" "$summarize_provider"
+  fi
 }
 
-# Export variables needed by the background function
-export MEMSEARCH_CMD MEMSEARCH_NO_WATCH=1 MEMORY_DIR SESSION_ID
-export TRANSCRIPT_PATH CHECKPOINT_FILE CURRENT_LINE_COUNT PARSED
-export COLLECTION_NAME COLLECTION_DESC SCRIPT_DIR
+if [ "${1:-}" = "--worker" ]; then
+  _run_worker
+  exit 0
+fi
 
-# Run in background with 30s hard timeout, fully detached from parent.
-# setsid puts the summarizer in its own session with no controlling terminal, so
-# a Ctrl-C in the interactive session cannot deliver SIGINT to the nested
-# `copilot -p` call (which would otherwise leak its "Operation cancelled by user"
-# banner into the summary). Fall back to plain background if setsid is missing.
+# The hook process itself performs only cheap recursion checks, then detaches.
+echo '{}'
+
+stop_hook_active=$(_json_val "$INPUT" "stop_hook_active" "false")
+stop_reason=$(_json_val "$INPUT" "stopReason" "")
+if hook_is_internal || [ "$stop_hook_active" = "true" ]; then
+  exit 0
+fi
+if [ -n "$stop_reason" ] && [ "$stop_reason" != "end_turn" ]; then
+  exit 0
+fi
+
+export MEMSEARCH_HOOK_INPUT="$INPUT"
+export MEMSEARCH_NO_WATCH=1
+export MEMSEARCH_IN_SUMMARY_WORKER=1
+
 if command -v setsid &>/dev/null; then
-  setsid timeout 30 bash -c "$(declare -f _do_summarize _json_val _json_encode_str run_memsearch ensure_memory_dir kill_orphaned_index); _do_summarize" </dev/null &>/dev/null &
+  setsid timeout 60 bash "$0" --worker </dev/null &>/dev/null &
 else
-  (timeout 30 bash -c "$(declare -f _do_summarize _json_val _json_encode_str run_memsearch ensure_memory_dir kill_orphaned_index); _do_summarize") </dev/null &>/dev/null &
+  timeout 60 bash "$0" --worker </dev/null &>/dev/null &
 fi
 disown

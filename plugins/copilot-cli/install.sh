@@ -23,14 +23,18 @@ fi
 echo "Installing memsearch plugin for Copilot CLI..."
 
 # Check for memsearch or install via uv
+if ! command -v uv &>/dev/null; then
+  echo "Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
 if ! command -v memsearch &>/dev/null; then
   echo "memsearch not found. Installing via uv..."
-  if ! command -v uv &>/dev/null; then
-    echo "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-  fi
   uv tool install 'memsearch[onnx]'
+else
+  echo "Upgrading memsearch..."
+  uv tool install --force 'memsearch[onnx]'
 fi
 
 # Check for copilot CLI
